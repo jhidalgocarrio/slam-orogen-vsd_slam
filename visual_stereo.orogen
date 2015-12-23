@@ -1,0 +1,80 @@
+name "visual_stereo"
+# Optionally declare the version number
+# version "0.1"
+
+# If new data types need to be defined, they have to be put in a separate C++
+# header, and this header will be loaded here
+import_types_from "visual_stereoTypes.hpp"
+
+# Finally, it is pretty common that headers are directly loaded from an external
+# library. In this case, the library must be first used (the name is the
+# library's pkg-config name) and then the header can be used. Following Rock
+# conventions, a common use-case would be:
+using_library "gtsam" # Smoothing and Mapping library
+using_library "envire_core" # Environment representation library
+using_library "frame_helper" # Rock frame helper library
+
+# If this project uses data types that are defined in other oroGen projects,
+# these projects should be imported there as well.
+import_types_from "base"
+import_types_from "frame_helper/Calibration.h"
+
+# Declare a new task context (i.e., a component)
+#
+# The corresponding C++ class can be edited in tasks/Task.hpp and
+# tasks/Task.cpp, and will be put in the visual_stereo namespace.
+task_context "Task" do
+    # This is the default from now on, and should not be removed. Rock will
+    # transition to a setup where all components use a configuration step.
+    needs_configuration
+
+    #**************************
+    #***** Task Properties ****
+    #**************************
+    property('visual_stereo_localization_source_frame', '/std/string').
+        doc 'Frame of the Visual Stereo localization (normally "visual stereo" frame)'+
+            'The Visual Stereo localization target frame is taken from the world frame of the transformer.'
+
+    property('odometry_localization_source_frame', '/std/string').
+        doc 'Frame of the Odometry localization (normally "body" frame)'+
+            'The odometry localization target frame is taken from the last SAM localization source frame.'
+
+    #****************************
+    #***** Sensor Properties ****
+    #****************************
+    property("calib_parameters","frame_helper/StereoCalibration").
+        doc 'Intrinsic and extrinsic camera calibration parameters'+
+            'for a full parameter list have a look at frame_helper'
+
+    #******************************
+    #******* Input ports  *********
+    #******************************
+    input_port('delta_pose_samples', '/base/samples/RigidBodyState').
+        needs_reliable_connection.
+        doc 'Delta pose displacement.'
+
+    input_port('visual_features_samples', 'visual_stereo::ExteroFeatures').
+        needs_reliable_connection.
+        doc 'Visual features samples in sensor frame'
+
+    ##########################
+    # Transformer
+    ##########################
+    transformer do
+        transform "navigation", "world" # navigation in world in "Source IN target" convention
+        transform "sensor", "body" # sensor in body in "Source IN target" convention
+    	align_port("delta_pose_samples", 0)
+    	align_port("visual_features_samples", 0)
+    	max_latency(0.02)
+    end
+
+    #******************************
+    #******* Output ports  ********
+    #******************************
+    output_port('pose_samples_out', '/base/samples/RigidBodyState').
+	    doc 'Corrected estimated robot pose.'
+
+    port_driven
+
+end
+

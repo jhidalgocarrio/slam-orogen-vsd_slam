@@ -1,0 +1,21 @@
+<package>
+  <description brief="Stereo Visual Localization and Mapping">
+  Stereo Visual Localization and Mapping using OpenCV and GTSAM
+  </description>
+  <author>Javier Hidalgo Carrio/javier.hidalgo_carrio@dfki.de</author>
+  <license>BSD</license>
+  <url>http://rock-robotics.org</url>
+  <depend package="base/cmake" />
+  <!--
+   To add any dependencies use the depend tag
+  <depend package="dummy-dependency-0" />
+	...
+  <depend package="dummy-dependency-n-1" />
+  <depend package="dummy-dependency-n" />
+  -->
+  <depend package="base/types" />
+  <depend package="drivers/orogen/aggregator" />
+  <depend package="drivers/orogen/transformer" />
+  <depend package="opencv" />
+  <depend package="slam/gtsam" />
+</package>
