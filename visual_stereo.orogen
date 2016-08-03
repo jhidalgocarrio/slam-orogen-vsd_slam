@@ -63,16 +63,16 @@ task_context "Task" do
     transformer do
         transform "navigation", "world" # navigation in world in "Source IN target" convention
         transform "sensor", "body" # sensor in body in "Source IN target" convention
-    	align_port("delta_pose_samples", 0)
-    	align_port("visual_features_samples", 0)
-    	max_latency(0.02)
+        align_port("delta_pose_samples", 0)
+        align_port("visual_features_samples", 0)
+        max_latency(0.02)
     end
 
     #******************************
     #******* Output ports  ********
     #******************************
     output_port('pose_samples_out', '/base/samples/RigidBodyState').
-	    doc 'Corrected estimated robot pose.'
+        doc 'Corrected estimated robot pose.'
 
     port_driven
 
