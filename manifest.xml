@@ -13,9 +13,10 @@
   <depend package="dummy-dependency-n-1" />
   <depend package="dummy-dependency-n" />
   -->
-  <depend package="base/types" />
+  <depend package="base/orogen/types" />
   <depend package="drivers/orogen/aggregator" />
   <depend package="drivers/orogen/transformer" />
   <depend package="opencv" />
   <depend package="slam/gtsam" />
+  <depend package="slam/mtk" />
 </package>

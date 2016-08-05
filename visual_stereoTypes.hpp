@@ -11,8 +11,8 @@
 
 #include <boost/uuid/uuid.hpp>
 
-#include <base/time.h>
-#include <base/eigen.h>
+#include <base/Time.hpp>
+#include <base/Eigen.hpp>
 #include <base/samples/RigidBodyState.hpp>
 
 namespace visual_stereo {

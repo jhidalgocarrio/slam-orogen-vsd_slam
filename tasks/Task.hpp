@@ -10,6 +10,14 @@
 
 /** Rock Types **/
 #include <base/samples/RigidBodyState.hpp>
+#include <base/TransformWithCovariance.hpp>
+
+/** MTK **/
+#include <mtk/types/pose.hpp>
+#include <mtk/types/SOn.hpp>
+#include <mtk/build_manifold.hpp>
+#include <ukfom/ukf.hpp>
+#include <ukfom/mtkwrap.hpp>
 
 /** GTSAM TYPES **/
 #include <gtsam/geometry/Pose3.h>
@@ -30,6 +38,21 @@
 #include <gtsam/nonlinear/LevenbergMarquardtOptimizer.h>
 
 namespace visual_stereo {
+
+    /** MTK TYPES **/
+    // We can't use types having a comma inside AutoConstruct macros :(
+    typedef MTK::vect<3, double> vec3;
+    typedef MTK::SO3<double> SO3;
+
+    MTK_BUILD_MANIFOLD ( MTKState ,
+    (( vec3, pos ))
+    (( SO3, orient ))
+    (( vec3, velo ))
+    (( vec3, angvelo ))
+    );
+
+    typedef ukfom::mtkwrap<MTKState> WMTKState;
+    typedef ukfom::ukf<WMTKState> UKF;
 
     /*! \class Task 
      * \brief The task context provides and requires services. It uses an ExecutionEngine to perform its functions.
@@ -60,7 +83,7 @@ tasks/Task.cpp, and will be put in the visual_stereo namespace.
         /******************************/
         /*** Control Flow Variables ***/
         /******************************/
-        bool initialization;
+        bool init_flag;
 
         /** Indices to identify poses and landmarks **/
         unsigned long int pose_idx, landmark_idx;
@@ -81,10 +104,21 @@ tasks/Task.cpp, and will be put in the visual_stereo namespace.
         /******************************************/
         /*** General Internal Storage Variables ***/
         /******************************************/
+
+        /** GTSAM Factor graph **/
         gtsam::NonlinearFactorGraph factor_graph;
 
         /** Values of the estimated quantities: TO-DO move to envire graph **/
         gtsam::Values sam_values;
+
+        /** Filter for the pose prediction in an UT form **/
+        boost::shared_ptr<UKF> filter;
+
+        /** State of the MTK pre-integration filter **/
+        WMTKState pose_state;
+
+        /** State of the MTK pre-integration filter in Rock type **/
+        base::TransformWithCovariance pose_with_cov;
 
         /**************************/
         /** Input port variables **/
@@ -183,6 +217,11 @@ tasks/Task.cpp, and will be put in the visual_stereo namespace.
          * before calling start() again.
          */
         void cleanupHook();
+
+        /**@brief initialization
+         */
+        void initialization(Eigen::Affine3d &tf);
+
     };
 }
 
