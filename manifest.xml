@@ -1,6 +1,6 @@
 <package>
-  <description brief="Stereo Visual Localization and Mapping">
-  Stereo Visual Localization and Mapping using OpenCV and GTSAM
+    <description brief="Visual Sttereo Dense Localization and Mapping">
+  Visual Stereo Dense Localization and Mapping using OpenCV and GTSAM
   </description>
   <author>Javier Hidalgo Carrio/javier.hidalgo_carrio@dfki.de</author>
   <license>BSD</license>

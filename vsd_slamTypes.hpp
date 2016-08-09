@@ -1,5 +1,5 @@
-#ifndef visual_stereo_TYPES_HPP
-#define visual_stereo_TYPES_HPP
+#ifndef vsd_slam_TYPES_HPP
+#define vsd_slam_TYPES_HPP
 
 /* If you need to define types specific to your oroGen components, define them
  * here. Required headers must be included explicitly

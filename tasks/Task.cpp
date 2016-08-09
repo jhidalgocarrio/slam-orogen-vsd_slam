@@ -2,7 +2,7 @@
 
 #include "Task.hpp"
 
-using namespace visual_stereo;
+using namespace vsd_slam;
 
 /** Process model when accumulating delta poses **/
 WMTKState processModel (const WMTKState &state,  const Eigen::Vector3d &linear_velocity, const Eigen::Vector3d &angular_velocity, const double delta_t)
@@ -13,8 +13,8 @@ WMTKState processModel (const WMTKState &state,  const Eigen::Vector3d &linear_v
     s2.angvelo = angular_velocity;
 
     /** Apply Rotation **/
-    ::visual_stereo::vec3 scaled_axis = state.angvelo * delta_t;
-    s2.orient = state.orient * ::visual_stereo::SO3::exp(scaled_axis);
+    ::vsd_slam::vec3 scaled_axis = state.angvelo * delta_t;
+    s2.orient = state.orient * ::vsd_slam::SO3::exp(scaled_axis);
 
     /** Update the velocity (position rate) **/
     s2.velo = state.orient * linear_velocity;
@@ -229,7 +229,7 @@ bool Task::configureHook()
 
     /** Optimized Output port **/
     this->vs_pose.invalidate();
-    this->vs_pose.sourceFrame = _visual_stereo_localization_source_frame.value();
+    this->vs_pose.sourceFrame = _vsd_slam_localization_source_frame.value();
 
     /** Relative Frame to port out the SAM pose samples **/
     this->vs_pose.targetFrame = _world_frame.value();

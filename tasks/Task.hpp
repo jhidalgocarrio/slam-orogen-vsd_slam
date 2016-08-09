@@ -1,9 +1,9 @@
 /* Generated from orogen/lib/orogen/templates/tasks/Task.hpp */
 
-#ifndef VISUAL_STEREO_TASK_TASK_HPP
-#define VISUAL_STEREO_TASK_TASK_HPP
+#ifndef VSD_SLAM_TASK_TASK_HPP
+#define VSD_SLAM_TASK_TASK_HPP
 
-#include "visual_stereo/TaskBase.hpp"
+#include "vsd_slam/TaskBase.hpp"
 
 /** Rock libraries **/
 #include <frame_helper/Calibration.h> /** Rock type for camera calibration parameters **/
@@ -37,7 +37,7 @@
 #include <gtsam/nonlinear/GaussNewtonOptimizer.h>
 #include <gtsam/nonlinear/LevenbergMarquardtOptimizer.h>
 
-namespace visual_stereo {
+namespace vsd_slam {
 
     /** MTK TYPES **/
     // We can't use types having a comma inside AutoConstruct macros :(
@@ -61,12 +61,12 @@ namespace visual_stereo {
      * Declare a new task context (i.e., a component)
 
 The corresponding C++ class can be edited in tasks/Task.hpp and
-tasks/Task.cpp, and will be put in the visual_stereo namespace.
+tasks/Task.cpp, and will be put in the vsd_slam namespace.
      * \details
      * The name of a TaskContext is primarily defined via:
      \verbatim
      deployment 'deployment_name'
-         task('custom_task_name','visual_stereo::Task')
+         task('custom_task_name','vsd_slam::Task')
      end
      \endverbatim
      *  It can be dynamically adapted when the deployment is called with a prefix argument. 
@@ -147,7 +147,7 @@ tasks/Task.cpp, and will be put in the visual_stereo namespace.
          * \param name Name of the task. This name needs to be unique to make it identifiable via nameservices.
          * \param initial_state The initial TaskState of the TaskContext. Default is Stopped state.
          */
-        Task(std::string const& name = "visual_stereo::Task");
+        Task(std::string const& name = "vsd_slam::Task");
 
         /** TaskContext constructor for Task 
          * \param name Name of the task. This name needs to be unique to make it identifiable for nameservices. 
