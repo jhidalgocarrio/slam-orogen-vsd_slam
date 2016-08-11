@@ -2,6 +2,15 @@
 
 #include "Task.hpp"
 
+#ifndef D2R
+#define D2R M_PI/180.00 /** Convert degree to radian **/
+#endif
+#ifndef R2D
+#define R2D 180.00/M_PI /** Convert radian to degree **/
+#endif
+
+#define DEBUG_PRINTS 1
+
 using namespace vsd_slam;
 
 /** Process model when accumulating delta poses **/
@@ -29,6 +38,9 @@ WMTKState processModel (const WMTKState &state,  const Eigen::Vector3d &linear_v
 Task::Task(std::string const& name)
     : TaskBase(name)
 {
+    /** Set pose and landmark symbol identifiers **/
+    this->pose_key = 'x';
+    this->landmark_key = 'l';
     this->pose_idx = 0;
     this->landmark_idx = 0;
 
@@ -38,6 +50,9 @@ Task::Task(std::string const& name)
 Task::Task(std::string const& name, RTT::ExecutionEngine* engine)
     : TaskBase(name, engine)
 {
+    /** Set pose and landmark symbol identifiers **/
+    this->pose_key = 'x';
+    this->landmark_key = 'l';
     this->pose_idx = 0;
     this->landmark_idx = 0;
 
@@ -50,7 +65,6 @@ Task::~Task()
 
 void Task::delta_pose_samplesTransformerCallback(const base::Time &ts, const ::base::samples::RigidBodyState &delta_pose_samples_sample)
 {
-
     if (!this->init_flag)
     {
         /***************************
@@ -66,19 +80,19 @@ void Task::delta_pose_samplesTransformerCallback(const base::Time &ts, const ::b
         }
         else if (!_navigation2world.get(ts, world_nav_tf, false))
         {
-            RTT::log(RTT::Fatal)<<"[VS FATAL ERROR]  No transformation provided."<<RTT::endlog();
+            RTT::log(RTT::Fatal)<<"[VSD_SLAM FATAL ERROR]  No transformation provided."<<RTT::endlog();
            return;
         }
 
         #ifdef DEBUG_PRINTS
-        RTT::log(RTT::Warning)<<"[VS POSE_SAMPLES] - Initializing Visual Stereo Back-End..."<<RTT::endlog();
+        RTT::log(RTT::Warning)<<"[VSD_SLAM POSE_SAMPLES] - Initializing Visual Stereo Back-End..."<<RTT::endlog();
         #endif
 
         /** Set initial pose out in body frame **/
-        this->vs_pose.position = world_nav_tf.translation(); //!Initial position
-        this->vs_pose.orientation = Eigen::Quaternion<double>(world_nav_tf.rotation());
-        this->vs_pose.velocity.setZero(); //!Initial velocity
-        this->vs_pose.angular_velocity.setZero(); //!Initial angular velocity
+        this->vs_pose_out.position = world_nav_tf.translation(); //!Initial position
+        this->vs_pose_out.orientation = Eigen::Quaternion<double>(world_nav_tf.rotation());
+        this->vs_pose_out.velocity.setZero(); //!Initial velocity
+        this->vs_pose_out.angular_velocity.setZero(); //!Initial angular velocity
 
         /** Get the transformation Tbody_sensor **/
         Eigen::Affine3d body_sensor_tf; /** Transformer transformation **/
@@ -88,7 +102,7 @@ void Task::delta_pose_samplesTransformerCallback(const base::Time &ts, const ::b
         }
         else if (!_sensor2body.get(ts, body_sensor_tf, false))
         {
-            RTT::log(RTT::Fatal)<<"[VS FATAL ERROR]  No transformation provided."<<RTT::endlog();
+            RTT::log(RTT::Fatal)<<"[VSD_SLAM FATAL ERROR]  No transformation provided."<<RTT::endlog();
            return;
         }
 
@@ -96,14 +110,14 @@ void Task::delta_pose_samplesTransformerCallback(const base::Time &ts, const ::b
         this->body_sensor_tf = body_sensor_tf;
 
         /** Change the initial pose out in sensor frame **/
-        this->vs_pose.position = body_sensor_tf.inverse() * this->vs_pose.position; // p_sensor = Tsensor_body p_body
-        this->vs_pose.orientation = this->vs_pose.orientation * Eigen::Quaternion <double>(body_sensor_tf.rotation()); //Tworld_sensor = Tworld_body * Tbody_sensor
+        this->vs_pose_out.position = body_sensor_tf.inverse() * this->vs_pose_out.position; // p_sensor = Tsensor_body p_body
+        this->vs_pose_out.orientation = this->vs_pose_out.orientation * Eigen::Quaternion <double>(body_sensor_tf.rotation()); //Tworld_sensor = Tworld_body * Tbody_sensor
 
         /***************************
         * BACK-END INITIALIZATION  *
         ***************************/
-        Eigen::Affine3d vs_pose_tf = this->vs_pose.getTransform();
-        this->initialization(vs_pose_tf);
+        Eigen::Affine3d vs_pose_out_tf = this->vs_pose_out.getTransform();
+        this->initialization(vs_pose_out_tf);
 
         /** Increase pose index **/
         this->pose_idx++;
@@ -132,7 +146,7 @@ void Task::delta_pose_samplesTransformerCallback(const base::Time &ts, const ::b
     }
     else if (!_sensor2body.get(ts, body_sensor_tf, false))
     {
-        RTT::log(RTT::Fatal)<<"[VS FATAL ERROR]  No transformation provided."<<RTT::endlog();
+        RTT::log(RTT::Fatal)<<"[VSD_SLAM FATAL ERROR]  No transformation provided."<<RTT::endlog();
        return;
     }
 
@@ -201,11 +215,37 @@ void Task::delta_pose_samplesTransformerCallback(const base::Time &ts, const ::b
     * **********************************************/
     gtsam::Pose3 current_pose(gtsam::Rot3(this->filter->mu().orient), gtsam::Point3(this->filter->mu().pos));
     this->sam_values.insert(symbol2, current_pose);
+
+    /** Increase in one unit the pose index **/
+    this->pose_idx++;
+
+    #ifdef DEBUG_PRINTS
+    RTT::log(RTT::Warning)<<"[VSD_SLAM DELTA_POSE ] POSE ID: "<<symbol2<<RTT::endlog();
+    #endif
+
+    /** Output port the odometry pose **/
+    this->odo_poseOutputport(this->delta_pose.time);
 }
 
 void Task::visual_features_samplesTransformerCallback(const base::Time &ts, const ::visual_stereo::ExteroFeatures &visual_features_samples_sample)
 {
 
+    if(!init_flag)
+    {
+        RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES ] FILTER STILL NOT INITIALIZED"<<RTT::endlog();
+        return;
+    }
+
+    gtsam::Symbol symbol1 = gtsam::Symbol(this->landmark_key, this->landmark_idx);
+    std::cout<<"[VSD_SLAM FEATURES ] LANDMARK ID: "<<symbol1<<"\n";
+    //RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES ] LANDMARK ID: "<<symbol1<<RTT::endlog();
+    this->landmark_idx++;
+
+    /** Read Stereo measurement from the input port **/
+
+    /** Set Generic Stereo Factor between measurements and the current camera pose **/
+
+    /** Set the estimated landmark pose **/
 
 }
 
@@ -228,27 +268,27 @@ bool Task::configureHook()
                                                 this->camera_calib.extrinsic.tx));
 
     /** Optimized Output port **/
-    this->vs_pose.invalidate();
-    this->vs_pose.sourceFrame = _vsd_slam_localization_source_frame.value();
+    this->vs_pose_out.invalidate();
+    this->vs_pose_out.sourceFrame = _vsd_slam_localization_source_frame.value();
 
     /** Relative Frame to port out the SAM pose samples **/
-    this->vs_pose.targetFrame = _world_frame.value();
+    this->vs_pose_out.targetFrame = _world_frame.value();
 
     /** Odometry Output port **/
-    this->odo_pose.invalidate();
-    this->odo_pose.sourceFrame = _odometry_localization_source_frame.value();
+    this->odo_pose_out.invalidate();
+    this->odo_pose_out.sourceFrame = _odometry_localization_source_frame.value();
 
     /** Relative Frame to port out the Odometry pose samples **/
-    this->odo_pose.targetFrame = this->vs_pose.sourceFrame;
+    this->odo_pose_out.targetFrame = this->vs_pose_out.sourceFrame;
 
     /***********************/
     /** Info and Warnings **/
     /***********************/
-    RTT::log(RTT::Warning)<<"[VISUAL STEREO SLAM TASK] DESIRED TARGET FRAME IS: "<<vs_pose.targetFrame<<RTT::endlog();
-    RTT::log(RTT::Warning)<<"[VISUAL STEREO SLAM TASK] STEREO CAMERA CALIBRATION PARAMETERS\n"<<RTT::endlog();
-    RTT::log(RTT::Warning)<<"[VISUAL STEREO SLAM TASK] FX "<<this->camera_calib.camLeft.fx<<" FY "<< this->camera_calib.camLeft.fy <<RTT::endlog();
-    RTT::log(RTT::Warning)<<"[VISUAL STEREO SLAM TASK] CX "<<this->camera_calib.camLeft.cx<<" CY "<< this->camera_calib.camLeft.cy <<RTT::endlog();
-    RTT::log(RTT::Warning)<<"[VISUAL STEREO SLAM TASK] BASELINE "<< this->camera_calib.extrinsic.tx <<RTT::endlog();
+    RTT::log(RTT::Warning)<<"[VSD_SLAM TASK] DESIRED TARGET FRAME IS: "<<vs_pose_out.targetFrame<<RTT::endlog();
+    RTT::log(RTT::Warning)<<"[VSD_SLAM TASK] STEREO CAMERA CALIBRATION PARAMETERS"<<RTT::endlog();
+    RTT::log(RTT::Warning)<<"[VSD_SLAM TASK] FX "<<this->camera_calib.camLeft.fx<<" FY "<< this->camera_calib.camLeft.fy <<RTT::endlog();
+    RTT::log(RTT::Warning)<<"[VSD_SLAM TASK] CX "<<this->camera_calib.camLeft.cx<<" CY "<< this->camera_calib.camLeft.cy <<RTT::endlog();
+    RTT::log(RTT::Warning)<<"[VSD_SLAM TASK] BASELINE "<< this->camera_calib.extrinsic.tx <<"\n"<<RTT::endlog();
 
     return true;
 }
@@ -296,21 +336,35 @@ void Task::initialization(Eigen::Affine3d &tf)
     /******************************/
 
     /** Initial covariance matrix **/
-    UKF::cov statek_cov; /** Initial P(0) for the state **/
-    statek_cov.setZero();
-    MTK::setDiagonal (statek_cov, &WMTKState::pos, 1e-10);
-    MTK::setDiagonal (statek_cov, &WMTKState::orient, 1e-10);
-    MTK::setDiagonal (statek_cov, &WMTKState::velo, 1e-12);
-    MTK::setDiagonal (statek_cov, &WMTKState::angvelo, 1e-12);
+    UKF::cov cov_statek_0; /** Initial P(0) for the state **/
+    cov_statek_0.setZero();
+    MTK::setDiagonal (cov_statek_0, &WMTKState::pos, 1e-10);
+    MTK::setDiagonal (cov_statek_0, &WMTKState::orient, 1e-10);
+    MTK::setDiagonal (cov_statek_0, &WMTKState::velo, 1e-12);
+    MTK::setDiagonal (cov_statek_0, &WMTKState::angvelo, 1e-12);
 
     /***************************/
     /**  MTK initialization   **/
     /***************************/
+    this->initUKF(statek_0, cov_statek_0);
 
-    /** Create the filter **/
-    this->filter.reset (new UKF (statek_0, statek_cov));
+    /***************************/
+    /**  SAM initialization   **/
+    /***************************/
+    gtsam::Symbol frame_id = gtsam::Symbol(this->pose_key, this->pose_idx);
+    gtsam::Pose3 first_pose(gtsam::Rot3(this->vs_pose_out.orientation), gtsam::Point3(this->vs_pose_out.position));
 
+    /** Constrain the first pose such that it cannot change from its original value during optimization
+    NOTE: NonlinearEquality forces the optimizer to use QR rather than Cholesky
+    QR is much slower than Cholesky, but numerically more stable **/
+    this->factor_graph.push_back(gtsam::NonlinearEquality<gtsam::Pose3>(frame_id, first_pose));
+
+    /** Insert first pose in initial estimates **/
+    this->sam_values.insert(frame_id, first_pose);
+
+    /***************************************/
     /** Accumulate pose in MTK state form **/
+    /***************************************/
     this->pose_state.pos = tf.translation(); //!Initial position
     this->pose_state.orient = Eigen::Quaternion<double>(tf.rotation());
 
@@ -322,36 +376,75 @@ void Task::initialization(Eigen::Affine3d &tf)
     this->pose_with_cov.translation = tf.translation();
     this->pose_with_cov.orientation = this->pose_state.orient;
 
-    /***************************/
-    /**  SAM initialization   **/
-    /***************************/
-    gtsam::Symbol frame_id = gtsam::Symbol(this->pose_key, this->pose_idx);
-    gtsam::Pose3 first_pose(gtsam::Rot3(this->vs_pose.orientation), gtsam::Point3(this->vs_pose.position));
+    return;
+}
 
-    /** Constrain the first pose such that it cannot change from its original value during optimization
-    NOTE: NonlinearEquality forces the optimizer to use QR rather than Cholesky
-    QR is much slower than Cholesky, but numerically more stable **/
-    this->factor_graph.push_back(gtsam::NonlinearEquality<gtsam::Pose3>(frame_id, first_pose));
-
-    /** Insert first pose in initial estimates **/
-    this->sam_values.insert(frame_id, first_pose);
-
+void Task::initUKF(WMTKState &statek, UKF::cov &statek_cov)
+{
+    /** Create the filter **/
+    this->filter.reset (new UKF (statek, statek_cov));
 
     #ifdef DEBUG_PRINTS
     WMTKState state = this->filter->mu();
     RTT::log(RTT::Warning)<< RTT::endlog();
-    RTT::log(RTT::Warning)<<"[VS INIT UKF] State P0|0 is of size " <<this->filter->sigma().rows()<<" x "<<filter->sigma().cols()<< RTT::endlog();
-    RTT::log(RTT::Warning)<<"[VS INIT UKF] State P0|0:\n"<<this->filter->sigma()<< RTT::endlog();
-    RTT::log(RTT::Warning)<<"[VS INIT UKF] state:\n"<<state<< RTT::endlog();
-    RTT::log(RTT::Warning)<<"[VS INIT UKF] position:\n"<<state.pos<< RTT::endlog();
-    RTT::log(RTT::Warning)<<"[VS INIT UKF] orientation Roll: "<< base::getRoll(state.orient)*R2D
+    RTT::log(RTT::Warning)<<"[VSD_SLAM INIT UKF] State P0|0 is of size " <<this->filter->sigma().rows()<<" x "<<filter->sigma().cols()<< RTT::endlog();
+    RTT::log(RTT::Warning)<<"[VSD_SLAM INIT UKF] State P0|0:\n"<<this->filter->sigma()<< RTT::endlog();
+    RTT::log(RTT::Warning)<<"[VSD_SLAM INIT UKF] state:\n"<<state<< RTT::endlog();
+    RTT::log(RTT::Warning)<<"[VSD_SLAM INIT UKF] position:\n"<<state.pos<< RTT::endlog();
+    RTT::log(RTT::Warning)<<"[VSD_SLAM INIT UKF] orientation Roll: "<< base::getRoll(state.orient)*R2D
         <<" Pitch: "<< base::getPitch(state.orient)*R2D<<" Yaw: "<< base::getYaw(state.orient)*R2D<< RTT::endlog();
-    RTT::log(RTT::Warning)<<"[VS INIT UKF] velocity:\n"<<state.velo<<"\n";
-    RTT::log(RTT::Warning)<<"[VS INIT UKF] angular velocity:\n"<<state.angvelo<<"\n";
+    RTT::log(RTT::Warning)<<"[VSD_SLAM INIT UKF] velocity:\n"<<state.velo<<"\n";
+    RTT::log(RTT::Warning)<<"[VSD_SLAM INIT UKF] angular velocity:\n"<<state.angvelo<<"\n";
     RTT::log(RTT::Warning)<< RTT::endlog();
     #endif
 
 
+}
+
+void Task::resetUKF(::base::Pose &current_delta_pose, ::base::Matrix6d &cov_current_delta_pose)
+{
+
+    /** Compute the delta pose since last time we reset the filter **/
+    current_delta_pose.position = this->filter->mu().pos;// Delta position
+    current_delta_pose.orientation = this->filter->mu().orient;// Delta orientation
+
+    /** Compute the delta covariance since last time we reset the filter **/
+    cov_current_delta_pose = this->filter->sigma().block<6,6>(0,0);
+
+    /** Update the velocity in the pose state **/
+    this->pose_state.velo = this->pose_state.orient * this->filter->mu().velo;// current linear velocity
+    this->pose_state.angvelo = this->pose_state.orient * this->filter->mu().angvelo;// current angular velocity
+
+    /** Reset covariance matrix **/
+    UKF::cov P(UKF::cov::Zero());
+    MTK::setDiagonal (P, &WMTKState::pos, 1e-10);
+    MTK::setDiagonal (P, &WMTKState::orient, 1e-10);
+    MTK::setDiagonal (P, &WMTKState::velo, 1e-12);
+    MTK::setDiagonal (P, &WMTKState::angvelo, 1e-12);
+
+    /** Remove the filter **/
+    this->filter.reset();
+
+    /** Create and reset a new filter **/
+    WMTKState statek;
+    this->initUKF(statek, P);
+
     return;
 }
 
+void Task::odo_poseOutputport(const base::Time &timestamp)
+{
+    WMTKState statek = this->filter->mu();
+
+    /** Out port the last odometry pose **/
+    this->odo_pose_out.position = statek.pos;
+    this->odo_pose_out.cov_position = this->filter->sigma().block<3,3>(0,0);
+    this->odo_pose_out.orientation = statek.orient;
+    this->odo_pose_out.cov_orientation = this->filter->sigma().block<3,3>(3,3);
+    this->odo_pose_out.velocity = statek.velo;
+    this->odo_pose_out.cov_velocity =  this->filter->sigma().block<3,3>(6,6);
+    this->odo_pose_out.angular_velocity = statek.angvelo;
+    this->odo_pose_out.cov_angular_velocity =  this->filter->sigma().block<3,3>(9,9);
+    _odo_pose_samples_out.write(this->odo_pose_out);
+
+}

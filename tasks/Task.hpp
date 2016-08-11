@@ -133,8 +133,8 @@ tasks/Task.cpp, and will be put in the vsd_slam namespace.
         /***************************/
         /** Output port variables **/
         /***************************/
-        base::samples::RigidBodyState vs_pose;
-        base::samples::RigidBodyState odo_pose;
+        base::samples::RigidBodyState vs_pose_out;
+        base::samples::RigidBodyState odo_pose_out;
 
     protected:
 
@@ -221,6 +221,18 @@ tasks/Task.cpp, and will be put in the vsd_slam namespace.
         /**@brief initialization
          */
         void initialization(Eigen::Affine3d &tf);
+
+        /**@brief initialization of the UKF
+         * */
+        void initUKF(WMTKState &statek, UKF::cov &statek_cov);
+
+        /**@brief reset the UKF
+         * */
+        void resetUKF(::base::Pose &current_delta_pose, ::base::Matrix6d &cov_current_delta_pose);
+
+        /**@brief Output port the odometry pose
+         */
+        void odo_poseOutputport(const base::Time &timestamp);
 
     };
 }

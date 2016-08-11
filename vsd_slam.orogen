@@ -72,7 +72,10 @@ task_context "Task" do
     #******* Output ports  ********
     #******************************
     output_port('pose_samples_out', '/base/samples/RigidBodyState').
-        doc 'Corrected estimated robot pose.'
+        doc 'Corrected estimated robot pose from the SLAM in sensor_frame.'
+
+    output_port('odo_pose_samples_out', '/base/samples/RigidBodyState').
+	    doc 'Corrected estimated robot pose with last odometry poses in sensor_frame.'
 
     port_driven
 
