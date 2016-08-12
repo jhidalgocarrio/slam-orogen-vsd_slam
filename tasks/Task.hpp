@@ -86,7 +86,7 @@ tasks/Task.cpp, and will be put in the vsd_slam namespace.
         bool init_flag;
 
         /** Indices to identify poses and landmarks **/
-        unsigned long int pose_idx, landmark_idx;
+        unsigned long int pose_idx;
 
         /**************************/
         /*** Property Variables ***/
@@ -101,25 +101,6 @@ tasks/Task.cpp, and will be put in the vsd_slam namespace.
         /** GTSAM stereo calibration **/
         gtsam::Cal3_S2Stereo::shared_ptr stereo_calib;
 
-        /******************************************/
-        /*** General Internal Storage Variables ***/
-        /******************************************/
-
-        /** GTSAM Factor graph **/
-        boost::shared_ptr<gtsam::NonlinearFactorGraph> factor_graph;
-
-        /** Values of the estimated quantities: TO-DO move to envire graph **/
-        gtsam::Values sam_values;
-
-        /** Filter for the pose prediction in an UT form **/
-        boost::shared_ptr<UKF> filter;
-
-        /** State of the MTK pre-integration filter **/
-        WMTKState pose_state;
-
-        /** State of the MTK pre-integration filter in Rock type **/
-        base::TransformWithCovariance pose_with_cov;
-
         /**************************/
         /** Input port variables **/
         /**************************/
@@ -129,6 +110,25 @@ tasks/Task.cpp, and will be put in the vsd_slam namespace.
 
         /** Delta Pose estimation **/
         ::base::samples::RigidBodyState delta_pose;
+
+        /******************************************/
+        /*** General Internal Storage Variables ***/
+        /******************************************/
+
+        /** GTSAM Factor graph **/
+        boost::shared_ptr<gtsam::NonlinearFactorGraph> factor_graph;
+
+        /** Values of the estimated quantities: TO-DO move to envire graph **/
+        boost::shared_ptr<gtsam::Values> sam_values;
+
+        /** Filter for the pose prediction in an UT form **/
+        boost::shared_ptr<UKF> filter;
+
+        /** State of the MTK pre-integration filter **/
+        WMTKState pose_state;
+
+        /** State of the MTK pre-integration filter in Rock type **/
+        base::TransformWithCovariance pose_with_cov;
 
         /***************************/
         /** Output port variables **/
@@ -233,6 +233,10 @@ tasks/Task.cpp, and will be put in the vsd_slam namespace.
         /**@brief Output port the odometry pose
          */
         void odo_poseOutputPort(const base::Time &timestamp);
+
+        /**@brief Output port the slam pose
+        * */
+        void vsd_slam_poseOutputPort(const base::Time &timestamp, const gtsam::Symbol &symbol);
 
     };
 }

@@ -42,7 +42,6 @@ Task::Task(std::string const& name)
     this->pose_key = 'x';
     this->landmark_key = 'l';
     this->pose_idx = 0;
-    this->landmark_idx = 0;
 
     this->init_flag = false;
 }
@@ -54,7 +53,6 @@ Task::Task(std::string const& name, RTT::ExecutionEngine* engine)
     this->pose_key = 'x';
     this->landmark_key = 'l';
     this->pose_idx = 0;
-    this->landmark_idx = 0;
 
     this->init_flag = false;
 }
@@ -65,6 +63,10 @@ Task::~Task()
 
 void Task::delta_pose_samplesTransformerCallback(const base::Time &ts, const ::base::samples::RigidBodyState &delta_pose_samples_sample)
 {
+    #ifdef DEBUG_PRINTS
+    RTT::log(RTT::Warning)<<"[VSD_SLAM DELTA_POSE ] DELTA_POSE TIME: "<<this->delta_pose.time.toMicroseconds()<<RTT::endlog();
+    #endif
+
     if (!this->init_flag)
     {
         /** Get the transformation Tbody_sensor **/
@@ -124,7 +126,7 @@ void Task::delta_pose_samplesTransformerCallback(const base::Time &ts, const ::b
         /** Set the initial delta_pose **/
         this->delta_pose = delta_pose_samples_sample;
 
-        /** Output port the initial pose **/
+        /** Output port the first initial pose **/
         _pose_samples_out.write(this->vsd_slam_pose_out);
 
         #ifdef DEBUG_PRINTS
@@ -174,25 +176,6 @@ void Task::delta_pose_samplesTransformerCallback(const base::Time &ts, const ::b
     this->body_sensor_tf = body_sensor_tf;
 
     /******************************************
-    * Delta pose BetweenFactor in GTSAM
-    * TO-DO: Remove it is not really needed
-    * ****************************************/
-
-    /** Delta noise model **/
-    ::base::Matrix6d cov_delta_pose;
-    cov_delta_pose << this->delta_pose.cov_position, Eigen::Matrix3d::Zero(),
-                   Eigen::Matrix3d::Zero(), this->delta_pose.cov_orientation;
-
-    /** Symbols **/
-    gtsam::Symbol symbol1 = gtsam::Symbol(this->pose_key, this->pose_idx-1);
-    gtsam::Symbol symbol2 = gtsam::Symbol(this->pose_key, this->pose_idx);
-
-    /** Add the delta pose to the factor graph. TO-DO: probably not needed **/
-    this->factor_graph->add(gtsam::BetweenFactor<gtsam::Pose3>(symbol1, symbol2,
-                gtsam::Pose3(gtsam::Rot3(this->delta_pose.orientation), gtsam::Point3(this->delta_pose.position)),
-                gtsam::noiseModel::Gaussian::Covariance(cov_delta_pose)));
-
-    /******************************************
     * Delta pose integration in sensor frame *
     * ****************************************/
 
@@ -208,42 +191,98 @@ void Task::delta_pose_samplesTransformerCallback(const base::Time &ts, const ::b
                             predict_delta_t),
                             cov_process);
 
-    /***********************************************
-    * Sensor Pose in GTSAM initial estimated values
-    * **********************************************/
-    gtsam::Pose3 current_pose(gtsam::Rot3(this->filter->mu().orient), gtsam::Point3(this->filter->mu().pos));
-    this->sam_values.insert(symbol2, current_pose);
-
-    /** Increase in one unit the pose index **/
-    this->pose_idx++;
-
-    #ifdef DEBUG_PRINTS
-    RTT::log(RTT::Warning)<<"[VSD_SLAM DELTA_POSE ] POSE ID: "<<symbol2<<RTT::endlog();
-    #endif
-
-    /** Output port the odometry pose **/
+    /******************************************
+    * Output port the odometry pose
+    ******************************************/
     this->odo_poseOutputPort(this->delta_pose.time);
 }
 
 void Task::visual_features_samplesTransformerCallback(const base::Time &ts, const ::visual_stereo::ExteroFeatures &visual_features_samples_sample)
 {
 
+    /*****************************************/
+    /** Check whether the UKF filter is set **/
+    /*****************************************/
     if(!init_flag)
     {
         RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES ] FILTER STILL NOT INITIALIZED"<<RTT::endlog();
         return;
     }
 
-    gtsam::Symbol symbol1 = gtsam::Symbol(this->landmark_key, this->landmark_idx);
-    std::cout<<"[VSD_SLAM FEATURES ] LANDMARK ID: "<<symbol1<<"\n";
-    //RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES ] LANDMARK ID: "<<symbol1<<RTT::endlog();
-    this->landmark_idx++;
+    /****************************************************/
+    /** Reset UKF and store the accumulated delta pose **/
+    /****************************************************/
+    RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES ] RESET UKF\n";
+    ::base::Pose cumulative_delta_pose;
+    ::base::Matrix6d cov_cumulative_delta_pose;
+    this->resetUKF(cumulative_delta_pose, cov_cumulative_delta_pose);
+    #ifdef DEBUG_PRINTS
+    RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES ] CUMULATIVE DELTA POSE"<<RTT::endlog();
+    RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES] CUMULATIVE DELTA POSITION:\n"<<cumulative_delta_pose.position<<"\n";
+    RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES] CUMULATIVE DELTA ORIENTATION ROLL: "<< base::getRoll(cumulative_delta_pose.orientation)*R2D
+        <<" PITCH: "<< base::getPitch(cumulative_delta_pose.orientation)*R2D<<" YAW: "<< base::getYaw(cumulative_delta_pose.orientation)*R2D<<std::endl;
+    RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES] CUMULATIVE DELTA COVARIANCE:\n"<<cov_cumulative_delta_pose<<"\n";
+    #endif
+
+
+    /****************************************************
+    **   Store the delta pose in the factor graph     **
+    ****************************************************/
+
+    /** Symbols **/
+    gtsam::Symbol symbol_prev = gtsam::Symbol(this->pose_key, this->pose_idx-1);
+    gtsam::Symbol symbol_current = gtsam::Symbol(this->pose_key, this->pose_idx);
+
+    /** Add the delta pose to the factor graph. TO-DO: probably not needed **/
+    /**  BetweenFactor in GTSAM **/
+    this->factor_graph->add(gtsam::BetweenFactor<gtsam::Pose3>(symbol_prev, symbol_current,
+                gtsam::Pose3(gtsam::Rot3(cumulative_delta_pose.orientation), gtsam::Point3(cumulative_delta_pose.position)),
+                gtsam::noiseModel::Gaussian::Covariance(cov_cumulative_delta_pose)));
+
+
+    /***********************************************
+     * Add the cumulative delta pose to the pose
+    ***********************************************/
+
+    /** Compute the pose estimate **/
+    ::base::TransformWithCovariance cumulative_delta_pose_with_cov(cumulative_delta_pose.position, cumulative_delta_pose.orientation, cov_cumulative_delta_pose);
+    this->pose_with_cov =  this->pose_with_cov * cumulative_delta_pose_with_cov;
+
+    /** Update the pose in pose state **/
+    this->pose_state.pos = this->pose_with_cov.translation;
+    this->pose_state.orient = static_cast<Eigen::Quaterniond>(this->pose_with_cov.orientation);
+
+    /***********************************************
+    * Store Pose in GTSAM initial estimated values
+    * **********************************************/
+    gtsam::Pose3 current_pose(gtsam::Rot3(this->pose_state.orient), gtsam::Point3(this->pose_state.pos));
+    this->sam_values->insert(symbol_current, current_pose);
 
     /** Read Stereo measurement from the input port **/
+    gtsam::Symbol visual_features_symbol = gtsam::Symbol(this->landmark_key, visual_features_samples_sample.img_idx);
+    RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES ] LANDMARK ID: "<<std::string(visual_features_symbol)<<RTT::endlog();
 
-    /** Set Generic Stereo Factor between measurements and the current camera pose **/
 
-    /** Set the estimated landmark pose **/
+    /******************************************************
+    * Set Generic Stereo Factor and features pose in GTSAM
+    ******************************************************/
+
+    /********************************
+    ** Output port the slam pose **
+    ********************************/
+    this->vsd_slam_poseOutputPort(visual_features_samples_sample.time, symbol_current);
+    #ifdef DEBUG_PRINTS
+    RTT::log(RTT::Warning)<<"********************************************\n";
+    RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES] CURRENT POSITION:\n"<<this->pose_with_cov.translation<<"\n";
+    RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURESM] CURRENT ORIENTATION ROLL: "<< base::getRoll(this->pose_with_cov.orientation)*R2D
+        <<" PITCH: "<< base::getPitch(this->pose_with_cov.orientation)*R2D<<" YAW: "<< base::getYaw(this->pose_with_cov.orientation)*R2D<<std::endl;
+    RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES] CURRENT COVARIANCE:\n"<<this->pose_with_cov.cov<<"\n";
+    #endif
+
+    /****************************************
+    ** Increase in one unit the pose index **
+    ****************************************/
+    this->pose_idx++;
 
 }
 
@@ -318,10 +357,10 @@ void Task::cleanupHook()
 
     /** Reset GTSAM **/
     this->factor_graph.reset();
+    this->sam_values.reset();
 
     /** Reset estimation **/
     this->pose_idx = 0;
-    this->landmark_idx = 0;
 }
 
 void Task::initialization(Eigen::Affine3d &tf)
@@ -360,8 +399,11 @@ void Task::initialization(Eigen::Affine3d &tf)
     QR is much slower than Cholesky, but numerically more stable **/
     this->factor_graph->push_back(gtsam::NonlinearEquality<gtsam::Pose3>(frame_id, first_pose));
 
+    /** Create the estimated values **/
+    this->sam_values.reset(new gtsam::Values());
+
     /** Insert first pose in initial estimates **/
-    this->sam_values.insert(frame_id, first_pose);
+    this->sam_values->insert(frame_id, first_pose);
 
     /***************************************/
     /** Accumulate pose in MTK state form **/
@@ -447,5 +489,25 @@ void Task::odo_poseOutputPort(const base::Time &timestamp)
     this->odo_pose_out.angular_velocity = statek.angvelo;
     this->odo_pose_out.cov_angular_velocity =  this->filter->sigma().block<3,3>(9,9);
     _odo_pose_samples_out.write(this->odo_pose_out);
+
+}
+
+void Task::vsd_slam_poseOutputPort(const base::Time &timestamp, const gtsam::Symbol &symbol)
+{
+//    const gtsam::Values pose_values = this->sam_values->filter<gtsam::Pose3>();
+//    const gtsam::Pose3 last_pose = reinterpret_cast<const gtsam::Pose3&>(pose_values.at(symbol));
+
+    /** Out port the last slam pose **/
+//    this->vsd_slam_pose_out.position = last_pose.translation().vector();
+//    this->odo_pose_out.cov_position = this->filter->sigma().block<3,3>(0,0);
+//    this->vsd_slam_pose_out.orientation = last_pose.rotation().toQuaternion();
+//    this->odo_pose_out.cov_orientation = this->filter->sigma().block<3,3>(3,3);
+//    this->odo_pose_out.velocity = statek.velo;
+//    this->odo_pose_out.cov_velocity =  this->filter->sigma().block<3,3>(6,6);
+//    this->odo_pose_out.angular_velocity = statek.angvelo;
+//    this->odo_pose_out.cov_angular_velocity =  this->filter->sigma().block<3,3>(9,9);
+    this->vsd_slam_pose_out.position = this->pose_state.pos;
+    this->vsd_slam_pose_out.orientation = this->pose_state.orient;
+    _pose_samples_out.write(this->vsd_slam_pose_out);
 
 }
