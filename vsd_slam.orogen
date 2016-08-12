@@ -32,11 +32,11 @@ task_context "Task" do
     #***** Task Properties ****
     #**************************
     property('vsd_slam_localization_source_frame', '/std/string').
-        doc 'Frame of the Visual Stereo localization (normally "visual stereo" frame)'+
+        doc 'Frame of the Visual Stereo localization (normally "vsd_slam" frame)'+
             'The Visual Stereo localization target frame is taken from the world frame of the transformer.'
 
     property('odometry_localization_source_frame', '/std/string').
-        doc 'Frame of the Odometry localization (normally "body" frame)'+
+        doc 'Frame of the Odometry localization (normally sensor_frame value of the transformer)'+
             'The odometry localization target frame is taken from the last SAM localization source frame.'
 
     #****************************

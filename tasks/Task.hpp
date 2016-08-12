@@ -106,7 +106,7 @@ tasks/Task.cpp, and will be put in the vsd_slam namespace.
         /******************************************/
 
         /** GTSAM Factor graph **/
-        gtsam::NonlinearFactorGraph factor_graph;
+        boost::shared_ptr<gtsam::NonlinearFactorGraph> factor_graph;
 
         /** Values of the estimated quantities: TO-DO move to envire graph **/
         gtsam::Values sam_values;
@@ -133,7 +133,7 @@ tasks/Task.cpp, and will be put in the vsd_slam namespace.
         /***************************/
         /** Output port variables **/
         /***************************/
-        base::samples::RigidBodyState vs_pose_out;
+        base::samples::RigidBodyState vsd_slam_pose_out;
         base::samples::RigidBodyState odo_pose_out;
 
     protected:
@@ -232,7 +232,7 @@ tasks/Task.cpp, and will be put in the vsd_slam namespace.
 
         /**@brief Output port the odometry pose
          */
-        void odo_poseOutputport(const base::Time &timestamp);
+        void odo_poseOutputPort(const base::Time &timestamp);
 
     };
 }

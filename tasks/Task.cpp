@@ -67,10 +67,19 @@ void Task::delta_pose_samplesTransformerCallback(const base::Time &ts, const ::b
 {
     if (!this->init_flag)
     {
-        /***************************
-        * Get the Sensor frame
-        * wrt the world frame
-        ***************************/
+        /** Get the transformation Tbody_sensor **/
+        Eigen::Affine3d body_sensor_tf; /** Transformer transformation **/
+        if (_sensor_frame.value().compare(_body_frame.value()) == 0)
+        {
+            body_sensor_tf.setIdentity();
+        }
+        else if (!_sensor2body.get(ts, body_sensor_tf, false))
+        {
+            RTT::log(RTT::Fatal)<<"[VSD_SLAM FATAL ERROR]  No transformation provided."<<RTT::endlog();
+           return;
+        }
+
+        /** Get the transformation Tworld_navigation **/
         Eigen::Affine3d world_nav_tf; /** Transformer transformation **/
 
         /** Get the transformation Tworld_navigation (navigation is body_0) **/
@@ -88,36 +97,20 @@ void Task::delta_pose_samplesTransformerCallback(const base::Time &ts, const ::b
         RTT::log(RTT::Warning)<<"[VSD_SLAM POSE_SAMPLES] - Initializing Visual Stereo Back-End..."<<RTT::endlog();
         #endif
 
-        /** Set initial pose out in body frame **/
-        this->vs_pose_out.position = world_nav_tf.translation(); //!Initial position
-        this->vs_pose_out.orientation = Eigen::Quaternion<double>(world_nav_tf.rotation());
-        this->vs_pose_out.velocity.setZero(); //!Initial velocity
-        this->vs_pose_out.angular_velocity.setZero(); //!Initial angular velocity
-
-        /** Get the transformation Tbody_sensor **/
-        Eigen::Affine3d body_sensor_tf; /** Transformer transformation **/
-        if (_sensor_frame.value().compare(_body_frame.value()) == 0)
-        {
-            body_sensor_tf.setIdentity();
-        }
-        else if (!_sensor2body.get(ts, body_sensor_tf, false))
-        {
-            RTT::log(RTT::Fatal)<<"[VSD_SLAM FATAL ERROR]  No transformation provided."<<RTT::endlog();
-           return;
-        }
-
-        /** Store Tbody_sensor **/
-        this->body_sensor_tf = body_sensor_tf;
+        /** Set initial pose out with respect to the navigation frame (navigation is body_0) **/
+        Eigen::Affine3d nav_sensor_tf = world_nav_tf.inverse() * body_sensor_tf; //!Initial transformation
 
         /** Change the initial pose out in sensor frame **/
-        this->vs_pose_out.position = body_sensor_tf.inverse() * this->vs_pose_out.position; // p_sensor = Tsensor_body p_body
-        this->vs_pose_out.orientation = this->vs_pose_out.orientation * Eigen::Quaternion <double>(body_sensor_tf.rotation()); //Tworld_sensor = Tworld_body * Tbody_sensor
+        this->vsd_slam_pose_out.position = nav_sensor_tf.translation();
+        this->vsd_slam_pose_out.orientation = Eigen::Quaternion<double>(nav_sensor_tf.rotation());
+        this->vsd_slam_pose_out.velocity.setZero(); //!Initial velocity
+        this->vsd_slam_pose_out.angular_velocity.setZero(); //!Initial angular velocity
 
         /***************************
         * BACK-END INITIALIZATION  *
         ***************************/
-        Eigen::Affine3d vs_pose_out_tf = this->vs_pose_out.getTransform();
-        this->initialization(vs_pose_out_tf);
+        Eigen::Affine3d vsd_slam_pose_out_tf = this->vsd_slam_pose_out.getTransform();
+        this->initialization(vsd_slam_pose_out_tf);
 
         /** Increase pose index **/
         this->pose_idx++;
@@ -125,9 +118,14 @@ void Task::delta_pose_samplesTransformerCallback(const base::Time &ts, const ::b
         /** Initialization succeeded **/
         this->init_flag = true;
 
+        /** Set the initial Tbody_sensor **/
+        this->body_sensor_tf = body_sensor_tf;
+
         /** Set the initial delta_pose **/
         this->delta_pose = delta_pose_samples_sample;
 
+        /** Output port the initial pose **/
+        _pose_samples_out.write(this->vsd_slam_pose_out);
 
         #ifdef DEBUG_PRINTS
         RTT::log(RTT::Warning)<<"[DONE]\n";
@@ -190,7 +188,7 @@ void Task::delta_pose_samplesTransformerCallback(const base::Time &ts, const ::b
     gtsam::Symbol symbol2 = gtsam::Symbol(this->pose_key, this->pose_idx);
 
     /** Add the delta pose to the factor graph. TO-DO: probably not needed **/
-    this->factor_graph.add(gtsam::BetweenFactor<gtsam::Pose3>(symbol1, symbol2,
+    this->factor_graph->add(gtsam::BetweenFactor<gtsam::Pose3>(symbol1, symbol2,
                 gtsam::Pose3(gtsam::Rot3(this->delta_pose.orientation), gtsam::Point3(this->delta_pose.position)),
                 gtsam::noiseModel::Gaussian::Covariance(cov_delta_pose)));
 
@@ -224,7 +222,7 @@ void Task::delta_pose_samplesTransformerCallback(const base::Time &ts, const ::b
     #endif
 
     /** Output port the odometry pose **/
-    this->odo_poseOutputport(this->delta_pose.time);
+    this->odo_poseOutputPort(this->delta_pose.time);
 }
 
 void Task::visual_features_samplesTransformerCallback(const base::Time &ts, const ::visual_stereo::ExteroFeatures &visual_features_samples_sample)
@@ -268,23 +266,23 @@ bool Task::configureHook()
                                                 this->camera_calib.extrinsic.tx));
 
     /** Optimized Output port **/
-    this->vs_pose_out.invalidate();
-    this->vs_pose_out.sourceFrame = _vsd_slam_localization_source_frame.value();
+    this->vsd_slam_pose_out.invalidate();
+    this->vsd_slam_pose_out.sourceFrame = _vsd_slam_localization_source_frame.value();
 
     /** Relative Frame to port out the SAM pose samples **/
-    this->vs_pose_out.targetFrame = _world_frame.value();
+    this->vsd_slam_pose_out.targetFrame = _world_frame.value();
 
     /** Odometry Output port **/
     this->odo_pose_out.invalidate();
     this->odo_pose_out.sourceFrame = _odometry_localization_source_frame.value();
 
     /** Relative Frame to port out the Odometry pose samples **/
-    this->odo_pose_out.targetFrame = this->vs_pose_out.sourceFrame;
+    this->odo_pose_out.targetFrame = this->vsd_slam_pose_out.sourceFrame;
 
     /***********************/
     /** Info and Warnings **/
     /***********************/
-    RTT::log(RTT::Warning)<<"[VSD_SLAM TASK] DESIRED TARGET FRAME IS: "<<vs_pose_out.targetFrame<<RTT::endlog();
+    RTT::log(RTT::Warning)<<"[VSD_SLAM TASK] DESIRED TARGET FRAME IS: "<<vsd_slam_pose_out.targetFrame<<RTT::endlog();
     RTT::log(RTT::Warning)<<"[VSD_SLAM TASK] STEREO CAMERA CALIBRATION PARAMETERS"<<RTT::endlog();
     RTT::log(RTT::Warning)<<"[VSD_SLAM TASK] FX "<<this->camera_calib.camLeft.fx<<" FY "<< this->camera_calib.camLeft.fy <<RTT::endlog();
     RTT::log(RTT::Warning)<<"[VSD_SLAM TASK] CX "<<this->camera_calib.camLeft.cx<<" CY "<< this->camera_calib.camLeft.cy <<RTT::endlog();
@@ -318,12 +316,12 @@ void Task::cleanupHook()
     /** Reset prediction filter **/
     this->filter.reset();
 
+    /** Reset GTSAM **/
+    this->factor_graph.reset();
+
     /** Reset estimation **/
     this->pose_idx = 0;
     this->landmark_idx = 0;
-
-    /** Reset GTSAM **/
-
 }
 
 void Task::initialization(Eigen::Affine3d &tf)
@@ -352,12 +350,15 @@ void Task::initialization(Eigen::Affine3d &tf)
     /**  SAM initialization   **/
     /***************************/
     gtsam::Symbol frame_id = gtsam::Symbol(this->pose_key, this->pose_idx);
-    gtsam::Pose3 first_pose(gtsam::Rot3(this->vs_pose_out.orientation), gtsam::Point3(this->vs_pose_out.position));
+    gtsam::Pose3 first_pose(gtsam::Rot3(this->vsd_slam_pose_out.orientation), gtsam::Point3(this->vsd_slam_pose_out.position));
+
+    /** Create the factor graph **/
+    this->factor_graph.reset(new gtsam::NonlinearFactorGraph());
 
     /** Constrain the first pose such that it cannot change from its original value during optimization
     NOTE: NonlinearEquality forces the optimizer to use QR rather than Cholesky
     QR is much slower than Cholesky, but numerically more stable **/
-    this->factor_graph.push_back(gtsam::NonlinearEquality<gtsam::Pose3>(frame_id, first_pose));
+    this->factor_graph->push_back(gtsam::NonlinearEquality<gtsam::Pose3>(frame_id, first_pose));
 
     /** Insert first pose in initial estimates **/
     this->sam_values.insert(frame_id, first_pose);
@@ -432,7 +433,7 @@ void Task::resetUKF(::base::Pose &current_delta_pose, ::base::Matrix6d &cov_curr
     return;
 }
 
-void Task::odo_poseOutputport(const base::Time &timestamp)
+void Task::odo_poseOutputPort(const base::Time &timestamp)
 {
     WMTKState statek = this->filter->mu();
 
