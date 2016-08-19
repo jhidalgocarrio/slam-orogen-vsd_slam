@@ -9,7 +9,7 @@
 #define R2D 180.00/M_PI /** Convert radian to degree **/
 #endif
 
-#define DEBUG_PRINTS 1
+//#define DEBUG_PRINTS 1
 
 using namespace vsd_slam;
 
@@ -43,7 +43,15 @@ Task::Task(std::string const& name)
     this->landmark_key = 'l';
     this->pose_idx = 0;
 
+    /******************************/
+    /*** Control Flow Variables ***/
+    /******************************/
     this->init_flag = false;
+
+    /**************************/
+    /** Input port variables **/
+    /**************************/
+    this->delta_pose.invalidate();
 }
 
 Task::Task(std::string const& name, RTT::ExecutionEngine* engine)
@@ -54,7 +62,15 @@ Task::Task(std::string const& name, RTT::ExecutionEngine* engine)
     this->landmark_key = 'l';
     this->pose_idx = 0;
 
+    /******************************/
+    /*** Control Flow Variables ***/
+    /******************************/
     this->init_flag = false;
+
+    /**************************/
+    /** Input port variables **/
+    /**************************/
+    this->delta_pose.invalidate();
 }
 
 Task::~Task()
@@ -136,6 +152,7 @@ void Task::delta_pose_samplesTransformerCallback(const base::Time &ts, const ::b
 
     /** Delta time between samples **/
     const double predict_delta_t = delta_pose_samples_sample.time.toSeconds() - this->delta_pose.time.toSeconds();
+    RTT::log(RTT::Warning)<<"[VSD_SLAM FATAL ERROR] predict_delta_time: "<<predict_delta_t<<RTT::endlog();
 
     Eigen::Affine3d body_sensor_tf; /** Transformer transformation **/
 
@@ -146,7 +163,7 @@ void Task::delta_pose_samplesTransformerCallback(const base::Time &ts, const ::b
     }
     else if (!_sensor2body.get(ts, body_sensor_tf, false))
     {
-        RTT::log(RTT::Fatal)<<"[VSD_SLAM FATAL ERROR]  No transformation provided."<<RTT::endlog();
+        RTT::log(RTT::Fatal)<<"[VSD_SLAM FATAL ERROR] No transformation provided."<<RTT::endlog();
        return;
     }
 
@@ -212,11 +229,11 @@ void Task::visual_features_samplesTransformerCallback(const base::Time &ts, cons
     /****************************************************/
     /** Reset UKF and store the accumulated delta pose **/
     /****************************************************/
-    RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES ] RESET UKF\n";
     ::base::Pose cumulative_delta_pose;
     ::base::Matrix6d cov_cumulative_delta_pose;
     this->resetUKF(cumulative_delta_pose, cov_cumulative_delta_pose);
     #ifdef DEBUG_PRINTS
+    RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES ] RESET UKF\n";
     RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES ] CUMULATIVE DELTA POSE"<<RTT::endlog();
     RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES] CUMULATIVE DELTA POSITION:\n"<<cumulative_delta_pose.position<<"\n";
     RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES] CUMULATIVE DELTA ORIENTATION ROLL: "<< base::getRoll(cumulative_delta_pose.orientation)*R2D
