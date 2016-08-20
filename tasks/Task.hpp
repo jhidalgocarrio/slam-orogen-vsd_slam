@@ -15,13 +15,6 @@
 #include <Eigen/Core> /** Core */
 #include <Eigen/StdVector> /** For STL container with Eigen types **/
 
-/** MTK **/
-#include <mtk/types/pose.hpp>
-#include <mtk/types/SOn.hpp>
-#include <mtk/build_manifold.hpp>
-#include <ukfom/ukf.hpp>
-#include <ukfom/mtkwrap.hpp>
-
 /** GTSAM TYPES **/
 #include <gtsam/geometry/Pose3.h>
 #include <gtsam/geometry/Cal3_S2Stereo.h>
@@ -41,7 +34,7 @@
 #include <gtsam/nonlinear/LevenbergMarquardtOptimizer.h>
 
 /** Base Types **/
-#include <base/TransformWithCovariance.hpp>
+#include <base/samples/BodyState.hpp>
 #include <base/samples/RigidBodyState.hpp>
 #include <base/samples/Pointcloud.hpp>
 
@@ -49,21 +42,6 @@
 #include <frame_helper/Calibration.h> /** Rock type for camera calibration parameters **/
 
 namespace vsd_slam {
-
-    /** MTK TYPES **/
-    // We can't use types having a comma inside AutoConstruct macros :(
-    typedef MTK::vect<3, double> vec3;
-    typedef MTK::SO3<double> SO3;
-
-    MTK_BUILD_MANIFOLD ( MTKState ,
-    (( vec3, pos ))
-    (( SO3, orient ))
-    (( vec3, velo ))
-    (( vec3, angvelo ))
-    );
-
-    typedef ukfom::mtkwrap<MTKState> WMTKState;
-    typedef ukfom::ukf<WMTKState> UKF;
 
     /*! \class Task 
      * \brief The task context provides and requires services. It uses an ExecutionEngine to perform its functions.
@@ -117,7 +95,7 @@ tasks/Task.cpp, and will be put in the vsd_slam namespace.
         /**************************/
 
         /** Delta Pose estimation **/
-        ::base::samples::RigidBodyState delta_pose;
+        ::base::samples::BodyState delta_pose;
 
         /******************************************/
         /*** General Internal Storage Variables ***/
@@ -129,14 +107,11 @@ tasks/Task.cpp, and will be put in the vsd_slam namespace.
         /** Values of the estimated quantities: TO-DO move to envire graph **/
         boost::shared_ptr<gtsam::Values> sam_values;
 
-        /** Filter for the pose prediction in an UT form **/
-        boost::shared_ptr<UKF> filter;
+        /** Cumulative delta pose between features samples  **/
+        base::samples::BodyState cumulative_delta_pose;
 
-        /** State of the MTK pre-integration filter **/
-        WMTKState pose_state;
-
-        /** State of the MTK pre-integration filter in Rock type **/
-        base::TransformWithCovariance pose_with_cov;
+        /** Pre-integration pose with covariance **/
+        base::samples::BodyState pose_with_cov;
 
         /***************************/
         /** Output port variables **/
@@ -229,14 +204,6 @@ tasks/Task.cpp, and will be put in the vsd_slam namespace.
         /**@brief initialization
          */
         void initialization(Eigen::Affine3d &tf);
-
-        /**@brief initialization of the UKF
-         * */
-        void initUKF(WMTKState &statek, UKF::cov &statek_cov);
-
-        /**@brief reset the UKF
-         * */
-        void resetUKF(::base::Pose &current_delta_pose, ::base::Matrix6d &cov_current_delta_pose);
 
         /**@brief Output port the odometry pose
          */

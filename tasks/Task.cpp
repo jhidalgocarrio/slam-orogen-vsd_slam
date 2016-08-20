@@ -14,28 +14,6 @@
 
 using namespace vsd_slam;
 
-/** Process model when accumulating delta poses **/
-WMTKState processModel (const WMTKState &state,  const Eigen::Vector3d &linear_velocity, const Eigen::Vector3d &angular_velocity, const double delta_t)
-{
-    WMTKState s2; /** Propagated state */
-
-    /** Update rotation rate **/
-    s2.angvelo = angular_velocity;
-
-    /** Apply Rotation **/
-    ::vsd_slam::vec3 scaled_axis = state.angvelo * delta_t;
-    s2.orient = state.orient * ::vsd_slam::SO3::exp(scaled_axis);
-
-    /** Update the velocity (position rate) **/
-    s2.velo = state.orient * linear_velocity;
-
-    /** Apply Translation **/
-    s2.pos = state.pos + (state.velo * delta_t);
-
-    return s2;
-};
-
-
 Task::Task(std::string const& name)
     : TaskBase(name)
 {
@@ -81,7 +59,7 @@ Task::~Task()
 void Task::delta_pose_samplesTransformerCallback(const base::Time &ts, const ::base::samples::RigidBodyState &delta_pose_samples_sample)
 {
     #ifdef DEBUG_PRINTS
-    RTT::log(RTT::Warning)<<"[VSD_SLAM DELTA_POSE_SAMPLES ] TIME: "<<this->delta_pose.time.toMicroseconds()<<RTT::endlog();
+    RTT::log(RTT::Warning)<<"[VSD_SLAM DELTA_POSE_SAMPLES ] TIME: "<<delta_pose_samples_sample.time.toMicroseconds()<<RTT::endlog();
     #endif
 
     if (!this->init_flag)
@@ -136,17 +114,7 @@ void Task::delta_pose_samplesTransformerCallback(const base::Time &ts, const ::b
     clock_t start = clock();
     #endif
 
-    /** Process Model Uncertainty **/
-    UKF::cov cov_process; cov_process.setZero();
-    MTK::subblock (cov_process, &WMTKState::velo, &WMTKState::velo) = this->delta_pose.cov_velocity;
-    MTK::subblock (cov_process, &WMTKState::angvelo, &WMTKState::angvelo) = this->delta_pose.cov_angular_velocity;
-
-    /** Predict the filter state **/
-    this->filter->predict(boost::bind(processModel, _1 ,
-                            static_cast<const Eigen::Vector3d>(this->delta_pose.velocity),
-                            static_cast<const Eigen::Vector3d>(this->delta_pose.angular_velocity),
-                            predict_delta_t),
-                            cov_process);
+    this->cumulative_delta_pose = this->cumulative_delta_pose * this->delta_pose;
 
     #ifdef DEBUG_EXECUTION_TIME
     clock_t end = clock();
@@ -163,12 +131,12 @@ void Task::delta_pose_samplesTransformerCallback(const base::Time &ts, const ::b
 void Task::visual_features_samplesTransformerCallback(const base::Time &ts, const ::visual_stereo::ExteroFeatures &visual_features_samples_sample)
 {
 
-    /*****************************************/
-    /** Check whether the UKF filter is set **/
-    /*****************************************/
+    /*********************************************/
+    /** Check whether the Initialization is set **/
+    /**********************************************/
     if(!init_flag)
     {
-        RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES ] FILTER STILL NOT INITIALIZED"<<RTT::endlog();
+        RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES ] TASK STILL NOT INITIALIZED"<<RTT::endlog();
         return;
     }
 
@@ -185,20 +153,7 @@ void Task::visual_features_samplesTransformerCallback(const base::Time &ts, cons
     }
 
 
-    /****************************************************/
-    /** Reset UKF and store the accumulated delta pose **/
-    /****************************************************/
-    ::base::Pose cumulative_delta_pose;
-    ::base::Matrix6d cov_cumulative_delta_pose;
-    this->resetUKF(cumulative_delta_pose, cov_cumulative_delta_pose);
-    #ifdef DEBUG_PRINTS
-    RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES ] RESET UKF\n";
-    RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES ] CUMULATIVE DELTA POSE"<<RTT::endlog();
-    RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES] CUMULATIVE DELTA POSITION:\n"<<cumulative_delta_pose.position<<"\n";
-    RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES] CUMULATIVE DELTA ORIENTATION ROLL: "<< base::getRoll(cumulative_delta_pose.orientation)*R2D
-        <<" PITCH: "<< base::getPitch(cumulative_delta_pose.orientation)*R2D<<" YAW: "<< base::getYaw(cumulative_delta_pose.orientation)*R2D<<std::endl;
-    RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES] CUMULATIVE DELTA COVARIANCE:\n"<<cov_cumulative_delta_pose<<"\n";
-    #endif
+    
 
     /****************************************
     ** Increase in one unit the pose index **
@@ -214,6 +169,10 @@ void Task::visual_features_samplesTransformerCallback(const base::Time &ts, cons
     gtsam::Symbol symbol_current = gtsam::Symbol(this->pose_key, this->pose_idx);
 
     /** Compute variance **/
+    base::Matrix6d cov_cumulative_delta_pose;
+    cov_cumulative_delta_pose << this->cumulative_delta_pose.cov_position(), Eigen::Matrix3d::Zero(),
+                              Eigen::Matrix3d::Zero(), this->cumulative_delta_pose.cov_orientation();
+
     Eigen::SelfAdjointEigenSolver<base::Matrix6d> ev(cov_cumulative_delta_pose);
     base::Vector6d var_cumulative_delta_pose = ev.eigenvalues();
 
@@ -221,7 +180,7 @@ void Task::visual_features_samplesTransformerCallback(const base::Time &ts, cons
     /** Add the delta pose to the factor graph. TO-DO: probably not needed **/
     /**  BetweenFactor in GTSAM **/
     this->factor_graph->add(gtsam::BetweenFactor<gtsam::Pose3>(symbol_prev, symbol_current,
-                gtsam::Pose3(gtsam::Rot3(cumulative_delta_pose.orientation), gtsam::Point3(cumulative_delta_pose.position)),
+                gtsam::Pose3(gtsam::Rot3(this->cumulative_delta_pose.orientation()), gtsam::Point3(this->cumulative_delta_pose.position())),
                 gtsam::noiseModel::Diagonal::Variances(var_cumulative_delta_pose)));
 
 
@@ -230,18 +189,27 @@ void Task::visual_features_samplesTransformerCallback(const base::Time &ts, cons
     ***********************************************/
 
     /** Compute the pose estimate **/
-    ::base::TransformWithCovariance cumulative_delta_pose_with_cov(cumulative_delta_pose.position, cumulative_delta_pose.orientation, cov_cumulative_delta_pose);
-    this->pose_with_cov =  this->pose_with_cov * cumulative_delta_pose_with_cov;
-
-    /** Update the pose in pose state **/
-    this->pose_state.pos = this->pose_with_cov.translation;
-    this->pose_state.orient = static_cast<Eigen::Quaterniond>(this->pose_with_cov.orientation);
+    this->pose_with_cov =  this->pose_with_cov * this->cumulative_delta_pose;
 
     /***********************************************
     * Store Pose estimated values in GTSAM
     * **********************************************/
-    gtsam::Pose3 current_pose(gtsam::Rot3(this->pose_state.orient), gtsam::Point3(this->pose_state.pos));
+    gtsam::Pose3 current_pose(gtsam::Rot3(this->pose_with_cov.orientation()), gtsam::Point3(this->pose_with_cov.position()));
     this->sam_values->insert(symbol_current, current_pose);
+
+    /****************************************************/
+    /** Reset the accumulated delta pose **/
+    /****************************************************/
+    #ifdef DEBUG_PRINTS
+    RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES ] CUMULATIVE DELTA POSE\n"<<this->cumulative_delta_pose<<RTT::endlog();
+    RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES ] RESET CUMULATIVE\n";
+    #endif
+
+    this->cumulative_delta_pose.initUnknown();
+    base::Matrix6d cov; cov.setIdentity(); cov *= 1e-10;
+    this->pose_with_cov.pose.setCovariance(cov);
+    this->pose_with_cov.velocity.setCovariance(cov);
+
 
     /** Read Stereo measurement from the input port **/
     gtsam::Symbol visual_features_symbol = gtsam::Symbol(this->landmark_key, visual_features_samples_sample.img_idx);
@@ -259,9 +227,9 @@ void Task::visual_features_samplesTransformerCallback(const base::Time &ts, cons
 
     #ifdef DEBUG_PRINTS
     RTT::log(RTT::Warning)<<"********************************************\n";
-    RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES] CURRENT POSITION:\n"<<this->pose_with_cov.translation<<"\n";
-    RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURESM] CURRENT ORIENTATION ROLL: "<< base::getRoll(this->pose_with_cov.orientation)*R2D
-        <<" PITCH: "<< base::getPitch(this->pose_with_cov.orientation)*R2D<<" YAW: "<< base::getYaw(this->pose_with_cov.orientation)*R2D<<std::endl;
+    RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES] CURRENT POSITION:\n"<<this->pose_with_cov.position()<<"\n";
+    RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURESM] CURRENT ORIENTATION ROLL: "<< base::getRoll(this->pose_with_cov.orientation())*R2D
+        <<" PITCH: "<< base::getPitch(this->pose_with_cov.orientation())*R2D<<" YAW: "<< base::getYaw(this->pose_with_cov.orientation())*R2D<<std::endl;
     //RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES] CURRENT COVARIANCE:\n"<<this->pose_with_cov.cov<<"\n";
     #endif
 }
@@ -301,7 +269,7 @@ bool Task::configureHook()
     /***********************/
     /** Info and Warnings **/
     /***********************/
-    RTT::log(RTT::Warning)<<"[VSD_SLAM TASK] DESIRED TARGET FRAME IS: "<<slam_pose_out.targetFrame<<RTT::endlog();
+    RTT::log(RTT::Warning)<<"[VSD_SLAM TASK] DESIRED TARGET FRAME IS: "<<this->slam_pose_out.targetFrame<<RTT::endlog();
     RTT::log(RTT::Warning)<<"[VSD_SLAM TASK] STEREO CAMERA CALIBRATION PARAMETERS"<<RTT::endlog();
     RTT::log(RTT::Warning)<<"[VSD_SLAM TASK] FX "<<this->camera_calib.camLeft.fx<<" FY "<< this->camera_calib.camLeft.fy <<RTT::endlog();
     RTT::log(RTT::Warning)<<"[VSD_SLAM TASK] CX "<<this->camera_calib.camLeft.cx<<" CY "<< this->camera_calib.camLeft.cy <<RTT::endlog();
@@ -332,9 +300,6 @@ void Task::cleanupHook()
 {
     TaskBase::cleanupHook();
 
-    /** Reset prediction filter **/
-    this->filter.reset();
-
     /** Reset GTSAM **/
     this->factor_graph.reset();
     this->sam_values.reset();
@@ -345,25 +310,13 @@ void Task::cleanupHook()
 
 void Task::initialization(Eigen::Affine3d &tf)
 {
-    /** The filter vector state variables for the navigation quantities **/
-    WMTKState statek_0;
-
-    /******************************/
-    /** Initialize the Back-End  **/
-    /******************************/
-
-    /** Initial covariance matrix **/
-    UKF::cov cov_statek_0; /** Initial P(0) for the state **/
-    cov_statek_0.setZero();
-    MTK::setDiagonal (cov_statek_0, &WMTKState::pos, 1e-10);
-    MTK::setDiagonal (cov_statek_0, &WMTKState::orient, 1e-10);
-    MTK::setDiagonal (cov_statek_0, &WMTKState::velo, 1e-12);
-    MTK::setDiagonal (cov_statek_0, &WMTKState::angvelo, 1e-12);
-
-    /***************************/
-    /**  MTK initialization   **/
-    /***************************/
-    this->initUKF(statek_0, cov_statek_0);
+    /**********************************************
+    **  Cumulative delta pose initialization
+    ***********************************************/
+    this->cumulative_delta_pose.initUnknown();
+    base::Matrix6d cov; cov.setIdentity(); cov *= 1e-10;
+    this->pose_with_cov.pose.setCovariance(cov);
+    this->pose_with_cov.velocity.setCovariance(cov);
 
     /***************************/
     /**    Initialization     **/
@@ -386,90 +339,30 @@ void Task::initialization(Eigen::Affine3d &tf)
     this->sam_values->insert(frame_id, first_pose);
     RTT::log(RTT::Warning)<<"[VSD_SLAM INITIALIZATION ] ADDED POSE ID: "<<std::string(frame_id)<<RTT::endlog();
 
-    /***************************************/
-    /** Accumulate pose in MTK state form **/
-    /***************************************/
-    this->pose_state.pos = tf.translation(); //!Initial position
-    this->pose_state.orient = Eigen::Quaternion<double>(tf.rotation());
-
-    /** Set the initial velocities in the state vector **/
-    this->pose_state.velo.setZero(); //!Initial linear velocity
-    this->pose_state.angvelo.setZero(); //!Initial angular velocity
-
-    /** Accumulate pose in TWC form **/
-    this->pose_with_cov.translation = tf.translation();
-    this->pose_with_cov.orientation = this->pose_state.orient;
+    /*************************/
+    /** Pose initialization **/
+    /*************************/
+    this->pose_with_cov.setPose(tf);
+    this->pose_with_cov.pose.setCovariance(cov);
+    this->pose_with_cov.velocity.setVelocity(base::Vector6d::Zero());
+    this->pose_with_cov.velocity.setCovariance(cov);
 
     return;
 }
 
-void Task::initUKF(WMTKState &statek, UKF::cov &statek_cov)
-{
-    /** Create the filter **/
-    this->filter.reset (new UKF (statek, statek_cov));
-
-    #ifdef DEBUG_PRINTS
-    WMTKState state = this->filter->mu();
-    RTT::log(RTT::Warning)<< RTT::endlog();
-    RTT::log(RTT::Warning)<<"[VSD_SLAM INIT UKF] State P0|0 is of size " <<this->filter->sigma().rows()<<" x "<<filter->sigma().cols()<< RTT::endlog();
-    RTT::log(RTT::Warning)<<"[VSD_SLAM INIT UKF] State P0|0:\n"<<this->filter->sigma()<< RTT::endlog();
-    RTT::log(RTT::Warning)<<"[VSD_SLAM INIT UKF] state:\n"<<state<< RTT::endlog();
-    RTT::log(RTT::Warning)<<"[VSD_SLAM INIT UKF] position:\n"<<state.pos<< RTT::endlog();
-    RTT::log(RTT::Warning)<<"[VSD_SLAM INIT UKF] orientation Roll: "<< base::getRoll(state.orient)*R2D
-        <<" Pitch: "<< base::getPitch(state.orient)*R2D<<" Yaw: "<< base::getYaw(state.orient)*R2D<< RTT::endlog();
-    RTT::log(RTT::Warning)<<"[VSD_SLAM INIT UKF] velocity:\n"<<state.velo<<"\n";
-    RTT::log(RTT::Warning)<<"[VSD_SLAM INIT UKF] angular velocity:\n"<<state.angvelo<<"\n";
-    RTT::log(RTT::Warning)<< RTT::endlog();
-    #endif
-
-
-}
-
-void Task::resetUKF(::base::Pose &current_delta_pose, ::base::Matrix6d &cov_current_delta_pose)
-{
-
-    /** Compute the delta pose since last time we reset the filter **/
-    current_delta_pose.position = this->filter->mu().pos;// Delta position
-    current_delta_pose.orientation = this->filter->mu().orient;// Delta orientation
-
-    /** Compute the delta covariance since last time we reset the filter **/
-    cov_current_delta_pose = this->filter->sigma().block<6,6>(0,0);
-
-    /** Update the velocity in the pose state **/
-    this->pose_state.velo = this->pose_state.orient * this->filter->mu().velo;// current linear velocity
-    this->pose_state.angvelo = this->pose_state.orient * this->filter->mu().angvelo;// current angular velocity
-
-    /** Reset covariance matrix **/
-    UKF::cov P(UKF::cov::Zero());
-    MTK::setDiagonal (P, &WMTKState::pos, 1e-10);
-    MTK::setDiagonal (P, &WMTKState::orient, 1e-10);
-    MTK::setDiagonal (P, &WMTKState::velo, 1e-12);
-    MTK::setDiagonal (P, &WMTKState::angvelo, 1e-12);
-
-    /** Remove the filter **/
-    this->filter.reset();
-
-    /** Create and reset a new filter **/
-    WMTKState statek;
-    this->initUKF(statek, P);
-
-    return;
-}
 
 void Task::odo_poseOutputPort(const base::Time &timestamp)
 {
-    WMTKState statek = this->filter->mu();
-
     /** Out port the last odometry pose **/
     this->odo_pose_out.time = timestamp;
-    this->odo_pose_out.position = statek.pos;
-    this->odo_pose_out.cov_position = this->filter->sigma().block<3,3>(0,0);
-    this->odo_pose_out.orientation = statek.orient;
-    this->odo_pose_out.cov_orientation = this->filter->sigma().block<3,3>(3,3);
-    this->odo_pose_out.velocity = statek.velo;
-    this->odo_pose_out.cov_velocity =  this->filter->sigma().block<3,3>(6,6);
-    this->odo_pose_out.angular_velocity = statek.angvelo;
-    this->odo_pose_out.cov_angular_velocity =  this->filter->sigma().block<3,3>(9,9);
+    this->odo_pose_out.position = this->cumulative_delta_pose.position();
+    this->odo_pose_out.cov_position = this->cumulative_delta_pose.cov_position();
+    this->odo_pose_out.orientation = this->cumulative_delta_pose.orientation();
+    this->odo_pose_out.cov_orientation = this->cumulative_delta_pose.cov_orientation();
+    this->odo_pose_out.velocity = this->cumulative_delta_pose.linear_velocity();
+    this->odo_pose_out.cov_velocity =  this->cumulative_delta_pose.cov_linear_velocity();
+    this->odo_pose_out.angular_velocity = this->cumulative_delta_pose.angular_velocity();
+    this->odo_pose_out.cov_angular_velocity =  this->cumulative_delta_pose.cov_angular_velocity();
     _odo_pose_samples_out.write(this->odo_pose_out);
 
 }
@@ -479,17 +372,14 @@ void Task::slam_poseOutputPort(const base::Time &timestamp, const gtsam::Symbol 
     /** Get the pose **/
     const gtsam::Pose3& last_pose = this->sam_values->at<gtsam::Pose3>(symbol);
 
-    /** Get the UKF vector state to know the current velocity **/
-    WMTKState statek = this->filter->mu();
-
     /** Out port the last slam pose **/
     this->slam_pose_out.time = timestamp;
     this->slam_pose_out.position = last_pose.translation().vector();
     this->slam_pose_out.orientation = last_pose.rotation().toQuaternion();
-    this->slam_pose_out.velocity = statek.velo;
-    this->slam_pose_out.cov_velocity =  this->filter->sigma().block<3,3>(6,6);
-    this->slam_pose_out.angular_velocity = statek.angvelo;
-    this->slam_pose_out.cov_angular_velocity =  this->filter->sigma().block<3,3>(9,9);
+    this->slam_pose_out.velocity = this->pose_with_cov.linear_velocity();
+    this->slam_pose_out.cov_velocity =  this->pose_with_cov.cov_linear_velocity();
+    this->slam_pose_out.angular_velocity = this->pose_with_cov.angular_velocity();
+    this->slam_pose_out.cov_angular_velocity =  this->pose_with_cov.cov_angular_velocity();
     _pose_samples_out.write(this->slam_pose_out);
 
 }

@@ -18,5 +18,4 @@
   <depend package="drivers/orogen/transformer" />
   <depend package="opencv" />
   <depend package="slam/gtsam" />
-  <depend package="slam/mtk" />
 </package>
