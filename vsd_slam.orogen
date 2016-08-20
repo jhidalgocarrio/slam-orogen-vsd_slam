@@ -31,7 +31,7 @@ task_context "Task" do
     #**************************
     #***** Task Properties ****
     #**************************
-    property('vsd_slam_localization_source_frame', '/std/string').
+    property('slam_localization_source_frame', '/std/string').
         doc 'Frame of the Visual Stereo localization (normally "vsd_slam" frame)'+
             'The Visual Stereo localization target frame is taken from the world frame of the transformer.'
 
