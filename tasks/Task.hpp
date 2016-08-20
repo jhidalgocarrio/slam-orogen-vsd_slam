@@ -5,12 +5,15 @@
 
 #include "vsd_slam/TaskBase.hpp"
 
-/** Rock libraries **/
-#include <frame_helper/Calibration.h> /** Rock type for camera calibration parameters **/
+/** STD **/
+#include <vector>
+#include <cstdlib>
+#include <cmath>
+#include <time.h>
 
-/** Rock Types **/
-#include <base/samples/RigidBodyState.hpp>
-#include <base/TransformWithCovariance.hpp>
+/** Eigen **/
+#include <Eigen/Core> /** Core */
+#include <Eigen/StdVector> /** For STL container with Eigen types **/
 
 /** MTK **/
 #include <mtk/types/pose.hpp>
@@ -36,6 +39,14 @@
 #include <gtsam/nonlinear/DoglegOptimizer.h>
 #include <gtsam/nonlinear/GaussNewtonOptimizer.h>
 #include <gtsam/nonlinear/LevenbergMarquardtOptimizer.h>
+
+/** Base Types **/
+#include <base/TransformWithCovariance.hpp>
+#include <base/samples/RigidBodyState.hpp>
+#include <base/samples/Pointcloud.hpp>
+
+/** Rock libraries **/
+#include <frame_helper/Calibration.h> /** Rock type for camera calibration parameters **/
 
 namespace vsd_slam {
 
@@ -105,9 +116,6 @@ tasks/Task.cpp, and will be put in the vsd_slam namespace.
         /** Input port variables **/
         /**************************/
 
-        /** Store the Tbody_sensor **/
-        Eigen::Affine3d body_sensor_tf;
-
         /** Delta Pose estimation **/
         ::base::samples::RigidBodyState delta_pose;
 
@@ -133,7 +141,7 @@ tasks/Task.cpp, and will be put in the vsd_slam namespace.
         /***************************/
         /** Output port variables **/
         /***************************/
-        base::samples::RigidBodyState vsd_slam_pose_out;
+        base::samples::RigidBodyState slam_pose_out;
         base::samples::RigidBodyState odo_pose_out;
 
     protected:
@@ -236,7 +244,7 @@ tasks/Task.cpp, and will be put in the vsd_slam namespace.
 
         /**@brief Output port the slam pose
         * */
-        void vsd_slam_poseOutputPort(const base::Time &timestamp, const gtsam::Symbol &symbol);
+        void slam_poseOutputPort(const base::Time &timestamp, const gtsam::Symbol &symbol);
 
     };
 }
