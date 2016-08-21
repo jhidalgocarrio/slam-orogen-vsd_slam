@@ -10,6 +10,11 @@
 #include <cstdlib>
 #include <cmath>
 #include <time.h>
+#include <stdlib.h>
+
+/** Boost **/
+#include <boost/shared_ptr.hpp> /** shared pointers **/
+#include <boost/uuid/uuid_io.hpp>
 
 /** Eigen **/
 #include <Eigen/Core> /** Core */
@@ -28,10 +33,6 @@
 #include <gtsam/nonlinear/NonlinearFactorGraph.h>
 #include <gtsam/slam/StereoFactor.h>
 
-/** GTSAM Optimizer **/
-#include <gtsam/nonlinear/DoglegOptimizer.h>
-#include <gtsam/nonlinear/GaussNewtonOptimizer.h>
-#include <gtsam/nonlinear/LevenbergMarquardtOptimizer.h>
 
 /** Base Types **/
 #include <base/samples/BodyState.hpp>
@@ -112,6 +113,9 @@ tasks/Task.cpp, and will be put in the vsd_slam namespace.
 
         /** Pre-integration pose with covariance **/
         base::samples::BodyState pose_with_cov;
+
+        /** Transformation between body and sensor frame **/
+        base::samples::BodyState body_sensor_bs;
 
         /***************************/
         /** Output port variables **/

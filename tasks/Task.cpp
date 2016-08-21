@@ -12,6 +12,11 @@
 #define DEBUG_PRINTS 1
 #define DEBUG_EXECUTION_TIME 1
 
+/** GTSAM Optimizer **/
+#include <gtsam/nonlinear/DoglegOptimizer.h>
+#include <gtsam/nonlinear/GaussNewtonOptimizer.h>
+#include <gtsam/nonlinear/LevenbergMarquardtOptimizer.h>
+
 using namespace vsd_slam;
 
 Task::Task(std::string const& name)
@@ -78,6 +83,18 @@ void Task::delta_pose_samplesTransformerCallback(const base::Time &ts, const ::b
            return;
         }
 
+        Eigen::Affine3d body_sensor_tf; /** Transformer transformation **/
+        /** Get the transformation Tbody_sensor **/
+        if (_sensor_frame.value().compare(_body_frame.value()) == 0)
+        {
+            body_sensor_tf.setIdentity();
+        }
+        else if (!_sensor2body.get(ts, body_sensor_tf, false))
+        {
+            RTT::log(RTT::Fatal)<<"[VSD_SLAM FATAL ERROR] No transformation provided."<<RTT::endlog();
+           return;
+        }
+
         #ifdef DEBUG_PRINTS
         RTT::log(RTT::Warning)<<"[VSD_SLAM DELTA_POSE_SAMPLES] - Initializing Visual Stereo Back-End..."<<RTT::endlog();
         #endif
@@ -85,13 +102,20 @@ void Task::delta_pose_samplesTransformerCallback(const base::Time &ts, const ::b
         /***************************
         * BACK-END INITIALIZATION  *
         ***************************/
-        this->initialization(world_nav_tf);
+        Eigen::Affine3d init_tf (world_nav_tf * body_sensor_tf);
+        this->initialization(init_tf);
 
         /** Initialization succeeded **/
         this->init_flag = true;
 
         /** Set the initial delta_pose **/
         this->delta_pose = delta_pose_samples_sample;
+
+        /********************************
+         ** Body Sensor initialization **
+        *********************************/
+        this->body_sensor_bs.initUnknown();
+        this->body_sensor_bs.setPose(body_sensor_tf);
 
         #ifdef DEBUG_PRINTS
         RTT::log(RTT::Warning)<<"[DONE]\n";
@@ -107,6 +131,18 @@ void Task::delta_pose_samplesTransformerCallback(const base::Time &ts, const ::b
     /** A new sample arrived to the input port **/
     this->delta_pose = delta_pose_samples_sample;
 
+    Eigen::Affine3d body_sensor_tf; /** Transformer transformation **/
+    /** Get the transformation Tbody_sensor **/
+    if (_sensor_frame.value().compare(_body_frame.value()) == 0)
+    {
+        body_sensor_tf.setIdentity();
+    }
+    else if (!_sensor2body.get(ts, body_sensor_tf, false))
+    {
+        RTT::log(RTT::Fatal)<<"[VSD_SLAM FATAL ERROR] No transformation provided."<<RTT::endlog();
+       return;
+    }
+
     /******************************************
     * Delta pose integration in sensor frame *
     * ****************************************/
@@ -114,6 +150,14 @@ void Task::delta_pose_samplesTransformerCallback(const base::Time &ts, const ::b
     clock_t start = clock();
     #endif
 
+    /** Delta pose in sensor frame **/
+    /** Ts(k-1)_s(k) = Ts(k-1)_b(k-1) * Tb(k-1)_b(k) * Tb(k)_s(k) **/
+    this->delta_pose.setPose(this->body_sensor_bs.getPose().inverse() * this->delta_pose.getPose() * body_sensor_tf);
+    this->delta_pose.linear_velocity() = this->delta_pose.orientation() * this->delta_pose.linear_velocity();
+    this->delta_pose.angular_velocity() = this->delta_pose.orientation() * this->delta_pose.angular_velocity();
+    /** TO-DO: what happed with the uncertainty since body_sensor_tf does not have uncertainty information **/
+
+    /** Cumulative delta pose **/
     this->cumulative_delta_pose = this->cumulative_delta_pose * this->delta_pose;
 
     #ifdef DEBUG_EXECUTION_TIME
@@ -121,6 +165,9 @@ void Task::delta_pose_samplesTransformerCallback(const base::Time &ts, const ::b
     double cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;
     RTT::log(RTT::Warning)<<"[VSD_SLAM DELTA_POSE_SAMPLES] execution time: "<<base::Time::fromMicroseconds(cpu_time_used*1000000.00)<<RTT::endlog();
     #endif
+
+    /** Store Tbody_sensor **/
+    this->body_sensor_bs.setPose(body_sensor_tf);
 
     /******************************************
     * Output port the odometry pose
@@ -139,21 +186,6 @@ void Task::visual_features_samplesTransformerCallback(const base::Time &ts, cons
         RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES ] TASK STILL NOT INITIALIZED"<<RTT::endlog();
         return;
     }
-
-    Eigen::Affine3d body_sensor_tf; /** Transformer transformation **/
-    /** Get the transformation Tbody_sensor **/
-    if (_sensor_frame.value().compare(_body_frame.value()) == 0)
-    {
-        body_sensor_tf.setIdentity();
-    }
-    else if (!_sensor2body.get(ts, body_sensor_tf, false))
-    {
-        RTT::log(RTT::Fatal)<<"[VSD_SLAM FATAL ERROR] No transformation provided."<<RTT::endlog();
-       return;
-    }
-
-
-    
 
     /****************************************
     ** Increase in one unit the pose index **
@@ -211,14 +243,61 @@ void Task::visual_features_samplesTransformerCallback(const base::Time &ts, cons
     this->pose_with_cov.velocity.setCovariance(cov);
 
 
-    /** Read Stereo measurement from the input port **/
-    gtsam::Symbol visual_features_symbol = gtsam::Symbol(this->landmark_key, visual_features_samples_sample.img_idx);
-    RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES ] LANDMARK ID: "<<std::string(visual_features_symbol)<<RTT::endlog();
-
+    const int start_position = 18;//can vary - we can use rand() too
+    const int length_hex = 14;//can vary - we can use rand() too
 
     /******************************************************
-    * Set Generic Stereo Factor and features pose in GTSAM
+    ** Read Stereo measurement from the input port 
     ******************************************************/
+    gtsam::Symbol image_symbol = gtsam::Symbol(this->landmark_key, visual_features_samples_sample.img_idx);
+    RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES ] IMAGE ID: "<<std::string(image_symbol)<<RTT::endlog();
+    RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES ] RECEIVED  "<<visual_features_samples_sample.features.size()<<" SAMPLES"<<RTT::endlog();
+    for (std::vector<visual_stereo::Feature>::const_iterator it = visual_features_samples_sample.features.begin();
+            it != visual_features_samples_sample.features.end(); ++it)
+    {
+        /** Get the feature index **/
+        std::string index_str = boost::uuids::to_string((*it).index);
+        RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES ] FEATURE ID STRING: "<<index_str<<RTT::endlog();
+        std::remove( index_str.begin(), index_str.end(), '-');
+        index_str = "0x" + index_str.substr(start_position, length_hex);
+        std::uint64_t index_uint = std::stoull(index_str, 0, 16); //random out of UUID
+        gtsam::Symbol feature_symbol = gtsam::Symbol(this->landmark_key, index_uint);
+        RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES ] FEATURE ID: "<< std::string(feature_symbol)<<RTT::endlog();
+
+        /** Get the feature stereo point **/
+        base::Vector3d const &stereo_point((*it).stereo_point);
+
+        /** Noise model of pixel coordinates **/
+        const gtsam::noiseModel::Isotropic::shared_ptr model = gtsam::noiseModel::Isotropic::Sigma(3,1);
+
+        /******************************************************
+        * Set Generic Stereo Factor and features pose in GTSAM
+        ******************************************************/
+        this->factor_graph->push_back(
+                gtsam::GenericStereoFactor<gtsam::Pose3, gtsam::Point3>(
+                    gtsam::StereoPoint2(stereo_point[0], stereo_point[1], stereo_point[2]),
+                    model, symbol_current, feature_symbol, this->stereo_calib));
+
+        /******************************************************
+         * Set the Feature initial estimated position
+        ******************************************************/
+        if (!this->sam_values->exists(feature_symbol))
+        {
+            base::Vector3d feature_position_base = this->pose_with_cov.getPose() * (*it).point_3d; // p_navigation_frame = Tnav_sensor_frame * Tp_sensor_frame
+            RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES ] FEATURE POSE["<< std::string(feature_symbol) <<"]: "<<
+                feature_position_base[0]<<" "<<feature_position_base[1]<<" "<<feature_position_base[2]<<RTT::endlog();
+            gtsam::Point3 feature_position (feature_position_base);
+            this->sam_values->insert(feature_symbol, feature_position);
+        }
+    }
+
+    /********************************
+    ** Optimize
+    ********************************/
+    gtsam::LevenbergMarquardtParams params;
+    params.orderingType = gtsam::Ordering::METIS;
+    gtsam::LevenbergMarquardtOptimizer optimizer = gtsam::LevenbergMarquardtOptimizer(*(this->factor_graph), *(this->sam_values), params);
+    gtsam::Values result = optimizer.optimize();
 
     /********************************
     ** Output port the slam pose **
@@ -315,8 +394,8 @@ void Task::initialization(Eigen::Affine3d &tf)
     ***********************************************/
     this->cumulative_delta_pose.initUnknown();
     base::Matrix6d cov; cov.setIdentity(); cov *= 1e-10;
-    this->pose_with_cov.pose.setCovariance(cov);
-    this->pose_with_cov.velocity.setCovariance(cov);
+    this->cumulative_delta_pose.pose.setCovariance(cov);
+    this->cumulative_delta_pose.velocity.setCovariance(cov);
 
     /***************************/
     /**    Initialization     **/
@@ -339,9 +418,9 @@ void Task::initialization(Eigen::Affine3d &tf)
     this->sam_values->insert(frame_id, first_pose);
     RTT::log(RTT::Warning)<<"[VSD_SLAM INITIALIZATION ] ADDED POSE ID: "<<std::string(frame_id)<<RTT::endlog();
 
-    /*************************/
-    /** Pose initialization **/
-    /*************************/
+    /*************************
+    ** Pose initialization  **
+    *************************/
     this->pose_with_cov.setPose(tf);
     this->pose_with_cov.pose.setCovariance(cov);
     this->pose_with_cov.velocity.setVelocity(base::Vector6d::Zero());
