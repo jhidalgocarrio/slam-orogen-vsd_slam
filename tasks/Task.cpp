@@ -10,7 +10,7 @@
 #endif
 
 #define DEBUG_PRINTS 1
-#define DEBUG_EXECUTION_TIME 1
+//#define DEBUG_EXECUTION_TIME 1
 
 /** GTSAM Optimizer **/
 #include <gtsam/nonlinear/DoglegOptimizer.h>
@@ -211,10 +211,15 @@ void Task::visual_features_samplesTransformerCallback(const base::Time &ts, cons
 
     /** Add the delta pose to the factor graph. TO-DO: probably not needed **/
     /**  BetweenFactor in GTSAM **/
-    this->factor_graph->add(gtsam::BetweenFactor<gtsam::Pose3>(symbol_prev, symbol_current,
+    if (this->pose_idx == 1)
+    {
+        RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES ] BETWEEN_FACTOR: "<<std::string(symbol_prev)
+            <<" -> "<< std::string(symbol_current)<<RTT::endlog();
+
+        this->factor_graph->add(gtsam::BetweenFactor<gtsam::Pose3>(symbol_prev, symbol_current,
                 gtsam::Pose3(gtsam::Rot3(this->cumulative_delta_pose.orientation()), gtsam::Point3(this->cumulative_delta_pose.position())),
                 gtsam::noiseModel::Diagonal::Variances(var_cumulative_delta_pose)));
-
+    }
 
     /***********************************************
      * Add the cumulative delta pose to the pose
@@ -226,8 +231,9 @@ void Task::visual_features_samplesTransformerCallback(const base::Time &ts, cons
     /***********************************************
     * Store Pose estimated values in GTSAM
     * **********************************************/
+    RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES ] ESTIMATE VALUE: "<<std::string(symbol_current)<<RTT::endlog();
     gtsam::Pose3 current_pose(gtsam::Rot3(this->pose_with_cov.orientation()), gtsam::Point3(this->pose_with_cov.position()));
-    this->sam_values->insert(symbol_current, current_pose);
+    this->estimate_values->insert(symbol_current, current_pose);
 
     /****************************************************/
     /** Reset the accumulated delta pose **/
@@ -262,7 +268,7 @@ void Task::visual_features_samplesTransformerCallback(const base::Time &ts, cons
         index_str = "0x" + index_str.substr(start_position, length_hex);
         std::uint64_t index_uint = std::stoull(index_str, 0, 16); //random out of UUID
         gtsam::Symbol feature_symbol = gtsam::Symbol(this->landmark_key, index_uint);
-        RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES ] FEATURE ID: "<< std::string(feature_symbol)<<RTT::endlog();
+        //RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES ] FEATURE ID: "<< std::string(feature_symbol)<<RTT::endlog();
 
         /** Get the feature stereo point **/
         base::Vector3d const &stereo_point((*it).stereo_point);
@@ -273,6 +279,8 @@ void Task::visual_features_samplesTransformerCallback(const base::Time &ts, cons
         /******************************************************
         * Set Generic Stereo Factor and features pose in GTSAM
         ******************************************************/
+        RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES ] STEREO_FACTOR: "<<std::string(symbol_current)
+            <<" -> "<< std::string(feature_symbol)<<RTT::endlog();
         this->factor_graph->push_back(
                 gtsam::GenericStereoFactor<gtsam::Pose3, gtsam::Point3>(
                     gtsam::StereoPoint2(stereo_point[0], stereo_point[1], stereo_point[2]),
@@ -281,23 +289,23 @@ void Task::visual_features_samplesTransformerCallback(const base::Time &ts, cons
         /******************************************************
          * Set the Feature initial estimated position
         ******************************************************/
-        if (!this->sam_values->exists(feature_symbol))
+        if (!this->estimate_values->exists(feature_symbol))
         {
             base::Vector3d feature_position_base = this->pose_with_cov.getPose() * (*it).point_3d; // p_navigation_frame = Tnav_sensor_frame * Tp_sensor_frame
             RTT::log(RTT::Warning)<<"[VSD_SLAM FEATURES ] FEATURE POSE["<< std::string(feature_symbol) <<"]: "<<
                 feature_position_base[0]<<" "<<feature_position_base[1]<<" "<<feature_position_base[2]<<RTT::endlog();
             gtsam::Point3 feature_position (feature_position_base);
-            this->sam_values->insert(feature_symbol, feature_position);
+            this->estimate_values->insert(feature_symbol, feature_position);
         }
     }
 
     /********************************
     ** Optimize
     ********************************/
-    gtsam::LevenbergMarquardtParams params;
-    params.orderingType = gtsam::Ordering::METIS;
-    gtsam::LevenbergMarquardtOptimizer optimizer = gtsam::LevenbergMarquardtOptimizer(*(this->factor_graph), *(this->sam_values), params);
-    gtsam::Values result = optimizer.optimize();
+    if ((visual_features_samples_sample.img_idx % 50) == 0)
+    {
+        this->optimize();
+    }
 
     /********************************
     ** Output port the slam pose **
@@ -381,7 +389,7 @@ void Task::cleanupHook()
 
     /** Reset GTSAM **/
     this->factor_graph.reset();
-    this->sam_values.reset();
+    this->estimate_values.reset();
 
     /** Reset estimation **/
     this->pose_idx = 0;
@@ -412,11 +420,11 @@ void Task::initialization(Eigen::Affine3d &tf)
     this->factor_graph->push_back(gtsam::NonlinearEquality<gtsam::Pose3>(frame_id, first_pose));
 
     /** Create the estimated values **/
-    this->sam_values.reset(new gtsam::Values());
+    this->estimate_values.reset(new gtsam::Values());
 
     /** Insert first pose in initial estimates **/
-    this->sam_values->insert(frame_id, first_pose);
-    RTT::log(RTT::Warning)<<"[VSD_SLAM INITIALIZATION ] ADDED POSE ID: "<<std::string(frame_id)<<RTT::endlog();
+    this->estimate_values->insert(frame_id, first_pose);
+    RTT::log(RTT::Warning)<<"[VSD_SLAM INITIALIZATION ] INITIAL POSE ID: "<<std::string(frame_id)<<RTT::endlog();
 
     /*************************
     ** Pose initialization  **
@@ -429,6 +437,18 @@ void Task::initialization(Eigen::Affine3d &tf)
     return;
 }
 
+void Task::optimize()
+{
+    gtsam::LevenbergMarquardtParams params;
+    params.orderingType = gtsam::Ordering::METIS;
+    gtsam::LevenbergMarquardtOptimizer optimizer = gtsam::LevenbergMarquardtOptimizer(*(this->factor_graph), *(this->estimate_values), params);
+
+    /** Store in the values **/
+    this->estimate_values.reset(new gtsam::Values(optimizer.optimize()));
+    RTT::log(RTT::Warning)<<"[VSD_SLAM OPTIMIZE] ESTIMATE_VALUES WITH: "<<this->estimate_values->size()<<"\n";
+
+    return;
+}
 
 void Task::odo_poseOutputPort(const base::Time &timestamp)
 {
@@ -449,7 +469,7 @@ void Task::odo_poseOutputPort(const base::Time &timestamp)
 void Task::slam_poseOutputPort(const base::Time &timestamp, const gtsam::Symbol &symbol)
 {
     /** Get the pose **/
-    const gtsam::Pose3& last_pose = this->sam_values->at<gtsam::Pose3>(symbol);
+    const gtsam::Pose3& last_pose = this->estimate_values->at<gtsam::Pose3>(symbol);
 
     /** Out port the last slam pose **/
     this->slam_pose_out.time = timestamp;
@@ -460,5 +480,7 @@ void Task::slam_poseOutputPort(const base::Time &timestamp, const gtsam::Symbol 
     this->slam_pose_out.angular_velocity = this->pose_with_cov.angular_velocity();
     this->slam_pose_out.cov_angular_velocity =  this->pose_with_cov.cov_angular_velocity();
     _pose_samples_out.write(this->slam_pose_out);
+
+//    this->pose_with_cov  = this->slam_pose_out;
 
 }

@@ -106,7 +106,7 @@ tasks/Task.cpp, and will be put in the vsd_slam namespace.
         boost::shared_ptr<gtsam::NonlinearFactorGraph> factor_graph;
 
         /** Values of the estimated quantities: TO-DO move to envire graph **/
-        boost::shared_ptr<gtsam::Values> sam_values;
+        boost::shared_ptr<gtsam::Values> estimate_values;
 
         /** Cumulative delta pose between features samples  **/
         base::samples::BodyState cumulative_delta_pose;
@@ -217,6 +217,9 @@ tasks/Task.cpp, and will be put in the vsd_slam namespace.
         * */
         void slam_poseOutputPort(const base::Time &timestamp, const gtsam::Symbol &symbol);
 
+        /** @brief Optimize
+         * */
+        void optimize();
     };
 }
 
