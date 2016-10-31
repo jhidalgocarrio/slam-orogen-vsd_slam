@@ -441,7 +441,7 @@ void Task::optimize()
 {
     gtsam::LevenbergMarquardtParams params;
     params.orderingType = gtsam::Ordering::METIS;
-    gtsam::LevenbergMarquardtOptimizer optimizer = gtsam::LevenbergMarquardtOptimizer(*(this->factor_graph), *(this->estimate_values), params);
+    gtsam::LevenbergMarquardtOptimizer optimizer (*(this->factor_graph), *(this->estimate_values), params);
 
     /** Store in the values **/
     this->estimate_values.reset(new gtsam::Values(optimizer.optimize()));

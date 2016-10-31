@@ -38,6 +38,7 @@
 #include <base/samples/BodyState.hpp>
 #include <base/samples/RigidBodyState.hpp>
 #include <base/samples/Pointcloud.hpp>
+#include <gtsam/nonlinear/LevenbergMarquardtOptimizer.h>
 
 /** Rock libraries **/
 #include <frame_helper/Calibration.h> /** Rock type for camera calibration parameters **/
